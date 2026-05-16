@@ -6,8 +6,11 @@ from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
-GENERATED_DIR = BACKEND_DIR / "generated"
 SCRIPT_DIR = BACKEND_DIR / "scripts"
+
+# Vercel 배포 환경은 /var/task 가 read-only → /tmp 사용
+_ON_VERCEL = bool(os.environ.get("VERCEL"))
+GENERATED_DIR = Path("/tmp/generated") if _ON_VERCEL else BACKEND_DIR / "generated"
 
 
 def _load_dotenv() -> None:
@@ -35,4 +38,7 @@ GEMINI_MODEL = get_env("GEMINI_MODEL", "gemini-3-pro-preview")
 HOST = get_env("BACKEND_HOST", "127.0.0.1")
 PORT = int(get_env("BACKEND_PORT", "8000"))
 
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
