@@ -7,6 +7,22 @@
     "api/index.py": {
       "maxDuration": 300,
       "includeFiles": "backend/**/*.py"
+    },
+    "api/health.py": {
+      "maxDuration": 300,
+      "includeFiles": "backend/**/*.py"
+    },
+    "api/analyze.py": {
+      "maxDuration": 300,
+      "includeFiles": "backend/**/*.py"
+    },
+    "api/analyze_v2.py": {
+      "maxDuration": 300,
+      "includeFiles": "backend/**/*.py"
+    },
+    "api/render.py": {
+      "maxDuration": 300,
+      "includeFiles": "backend/**/*.py"
     }
   },
   "rewrites": [
