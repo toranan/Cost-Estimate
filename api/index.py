@@ -1,15 +1,21 @@
-"""Vercel Python serverless 진입점.
+"""Vercel Python serverless 단일 진입점.
 
-기존 backend/server.py 의 ApiHandler 를 그대로 사용한다.
-Vercel은 'handler' 라는 이름의 BaseHTTPRequestHandler 클래스를 자동으로 찾는다.
+vercel.json 의 routes 로 /api/* 모두 이 파일이 받음.
+backend/server.py 의 ApiHandler 가 path 별로 라우팅 처리.
 """
-import os
 import sys
 from pathlib import Path
 
-# 프로젝트 루트를 PYTHONPATH에 추가 (backend 모듈 import 가능하도록)
+# 프로젝트 루트를 PYTHONPATH 에 추가 (backend 모듈 import 용)
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.server import ApiHandler as handler  # noqa: E402,F401
+from backend.server import ApiHandler  # noqa: E402
+
+
+# Vercel Python runtime 은 top-level 'handler' 클래스를 찾는다.
+# `import as handler` 별칭은 인식 못 하므로 명시적 class 정의로 export.
+class handler(ApiHandler):
+    """Top-level handler — Vercel entrypoint."""
+    pass
