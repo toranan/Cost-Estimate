@@ -2,30 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/dist",
-  "framework": null,
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**/*.py"
-    },
-    "api/health.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**/*.py"
-    },
-    "api/analyze.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**/*.py"
-    },
-    "api/analyze_v2.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**/*.py"
-    },
-    "api/render.py": {
-      "maxDuration": 300,
-      "includeFiles": "backend/**/*.py"
-    }
-  },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" }
-  ]
+  "framework": null
 }
