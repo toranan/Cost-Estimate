@@ -40,27 +40,29 @@ except Exception as _exc:  # noqa: BLE001
     _KOSIS_VARS = set()
 
 
-COMPUTE_PROMPT = """당신은 비용추계 계산 전문가입니다. 아래 조례안의 비용 항목 산식과 KOSIS 통계값을 활용해 5개년 추계 금액을 계산하세요.
+COMPUTE_PROMPT = """당신은 비용추계 계산 전문가입니다. 아래 조례안의 비용 항목 산식과 KOSIS 통계값으로 5개년 추계 금액을 계산하세요.
 
 [조례안] {bill_name}
 
 [비용 항목 + 산식 + KOSIS 자동조회값]
 {items_text}
 
-위 정보를 활용해서:
-1. 산식에 변수를 대입할 수 있으면 1~5차년도 금액(천원)을 계산
-2. 물가/임금 상승률이 있으면 매년 복리로 반영
-3. 변수가 불확실하면 합리적 가정값 사용 + note에 명시
-4. 계산 불가능하면 amount_thousand=null
+★ 절대 규칙 ★
+1. 산식에 필요한 모든 변수의 실제 값(KOSIS 또는 명시된 수치)이 있을 때만 계산
+2. 변수 값이 없으면 절대 추정/가정하지 말 것 → amount_thousand=null, missing_vars에 명시
+3. "100단지로 가정", "평균 50명으로 추정" 같은 임의 가정 금지
+4. 물가/임금 상승률 등 KOSIS 값은 그대로 사용 (복리 계산 OK)
+5. 계산 가능한 항목만 계산, 나머지는 솔직히 null + 누락 변수 보고
 
 반드시 아래 JSON 형식으로만 응답:
 {{
   "year_estimates": [
-    {{"year": 1, "amount_thousand": 숫자또는null, "note": "계산근거 한 줄"}},
-    {{"year": 2, "amount_thousand": 숫자또는null, "note": "..."}},
-    {{"year": 3, "amount_thousand": 숫자또는null, "note": "..."}},
-    {{"year": 4, "amount_thousand": 숫자또는null, "note": "..."}},
-    {{"year": 5, "amount_thousand": 숫자또는null, "note": "..."}}
+    {{"year": 1, "amount_thousand": 숫자또는null, "note": "계산 가능: 산식 + 사용값 / 계산 불가: 누락 사유",
+      "missing_vars": ["부족한 변수명1", "부족한 변수명2"] 또는 []}},
+    {{"year": 2, ...}},
+    {{"year": 3, ...}},
+    {{"year": 4, ...}},
+    {{"year": 5, ...}}
   ]
 }}"""
 
@@ -106,12 +108,130 @@ def _compute_year_estimates(estimate: dict, bill_name: str) -> list[dict] | None
             amt = int(float(raw)) if raw is not None else None
         except (TypeError, ValueError):
             amt = None
+        missing = y.get("missing_vars") or []
+        if not isinstance(missing, list):
+            missing = []
         cleaned.append({
             "year":            y.get("year"),
             "amount_thousand": amt,
             "note":            str(y.get("note") or ""),
+            "missing_vars":    [str(v) for v in missing],
         })
     return cleaned or None
+
+
+def _build_qa_report(
+    estimate: dict | None,
+    similar_estimates: list[dict],
+    tag_patterns: list[dict],
+    legal_chunks: list[dict],
+) -> dict[str, Any]:
+    """사용자가 보완해야 할 부분을 명시한 QA 리포트 생성.
+
+    추정/가정 없이 '뭐가 없는지'만 사실 그대로 보고.
+    """
+    issues: list[dict[str, Any]] = []
+
+    # 1) 유사 사례 신뢰도
+    if similar_estimates:
+        avg_sim = sum(float(s.get("similarity", 0)) for s in similar_estimates) / len(similar_estimates)
+        if avg_sim < 0.5:
+            issues.append({
+                "level":    "warn",
+                "category": "유사 사례 신뢰도 낮음",
+                "detail":   f"검색된 유사 추계서 평균 유사도 {avg_sim:.0%} (50% 미만)",
+                "action":   "이 의안과 유사한 추계 사례가 부족합니다. 수동 검토 필수.",
+            })
+    else:
+        issues.append({
+            "level":    "warn",
+            "category": "유사 사례 없음",
+            "detail":   "RAG 검색에서 유사 추계서를 찾지 못했습니다.",
+            "action":   "새로운 유형의 의안일 가능성. 수동 검토 필수.",
+        })
+
+    # 2) TAG 패턴 매칭
+    if not tag_patterns:
+        issues.append({
+            "level":    "info",
+            "category": "TAG 구조 패턴 없음",
+            "detail":   "유사 의안의 구조화된 산식/금액 데이터를 찾지 못했습니다.",
+            "action":   "산식 자체 검토 필요.",
+        })
+
+    # 3) 법령 근거
+    if not legal_chunks:
+        issues.append({
+            "level":    "info",
+            "category": "법령 근거 검색 실패",
+            "detail":   "비용추계 법령 PDF RAG가 비어있어 기본 판단 기준을 적용했습니다.",
+            "action":   "법령 적용 여부 확인.",
+        })
+
+    items = (estimate or {}).get("items") or []
+
+    # 4) KOSIS 자동 조회 불가 변수 수집
+    kosis_missing: dict[str, list[str]] = {}  # 항목별
+    for item in items:
+        kosis_done = {k["variable"] for k in (item.get("kosis_lookups") or [])}
+        for var in item.get("variables_needed") or []:
+            v = str(var).strip()
+            if v and v not in _KOSIS_VARS and v not in kosis_done:
+                kosis_missing.setdefault(item.get("name", "?"), []).append(v)
+
+    if kosis_missing:
+        total = sum(len(v) for v in kosis_missing.values())
+        issues.append({
+            "level":    "warn",
+            "category": f"통계청 자동조회 불가 변수 {total}개",
+            "detail":   "KOSIS에 매핑되지 않은 변수가 있어 자동 조회가 안 됩니다.",
+            "action":   "아래 변수의 실제 값을 직접 확인해 입력해야 합니다.",
+            "items":    kosis_missing,
+        })
+
+    # 5) 계산 불가능한 연도 (missing_vars가 있거나 amount=null)
+    year_ests = (estimate or {}).get("year_estimates") or []
+    uncomputed = [y for y in year_ests if y.get("amount_thousand") is None]
+    if uncomputed:
+        # 누락 변수 통합
+        all_missing: set[str] = set()
+        for y in uncomputed:
+            for mv in y.get("missing_vars") or []:
+                all_missing.add(mv)
+        issues.append({
+            "level":    "error",
+            "category": f"연도별 금액 계산 불가 {len(uncomputed)}/{len(year_ests)}년",
+            "detail":   f"필요 변수가 부족해 계산하지 못한 연도가 있습니다.",
+            "action":   "아래 누락 변수를 채우면 자동 계산 가능합니다."
+                        if all_missing else "산식 자체를 점검해야 합니다.",
+            "missing_vars": sorted(all_missing) if all_missing else [],
+        })
+
+    # 6) 항목별 추계서 미생성
+    if not items and not (estimate is None):
+        issues.append({
+            "level":    "error",
+            "category": "비용 항목 추출 실패",
+            "detail":   "조례안에서 구체적 비용 항목을 추출하지 못했습니다.",
+            "action":   "조례안 원문을 다시 확인하거나 미첨부 사유서로 전환 검토.",
+        })
+
+    # 종합 요약
+    has_error = any(i["level"] == "error" for i in issues)
+    has_warn  = any(i["level"] == "warn"  for i in issues)
+    summary = (
+        "❌ 사용자 입력/검증 필수" if has_error else
+        "⚠️ 사용자 검토 권장"      if has_warn  else
+        "✅ 자동 분석 완료"
+    )
+
+    return {
+        "summary":    summary,
+        "has_error":  has_error,
+        "has_warn":   has_warn,
+        "issue_count": len(issues),
+        "issues":     issues,
+    }
 
 
 def _lookup_kosis_variables(variables_needed: list[str]) -> list[dict[str, Any]]:
@@ -725,6 +845,14 @@ def analyze_v2(filename: str, content_b64: str) -> dict[str, Any]:
         if calculated:
             estimate["year_estimates"] = calculated
 
+    # 5-3) QA 리포트 — 무엇이 부족한지 사용자에게 명시
+    qa_report = _build_qa_report(
+        estimate=estimate,
+        similar_estimates=similar_estimates,
+        tag_patterns=tag_patterns,
+        legal_chunks=legal_chunks,
+    )
+
     # 6) 응답 조립
     return {
         "filename":     filename,
@@ -745,6 +873,7 @@ def analyze_v2(filename: str, content_b64: str) -> dict[str, Any]:
 
         "estimate":      final.get("if_needs_estimate"),
         "nonAttachment": final.get("if_non_attachment"),
+        "qaReport":      qa_report,
 
         "references": {
             "similar_bills_cost_estimate": [

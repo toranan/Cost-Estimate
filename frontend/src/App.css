@@ -640,6 +640,94 @@
 }
 .na-reason { line-height: 1.7; font-size: 0.94rem; color: var(--text); }
 
+/* ========== QA Report ========== */
+.qa-report {
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
+  margin: 0 0 20px 0;
+  border: 1px solid;
+}
+.qa-report.qa-error { background: #fef2f2; border-color: #fecaca; }
+.qa-report.qa-warn  { background: #fffbeb; border-color: #fde68a; }
+.qa-report.qa-ok    { background: #f0fdf4; border-color: #bbf7d0; }
+.qa-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+.qa-summary {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.qa-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.qa-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.qa-issue {
+  background: rgba(255,255,255,0.6);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  border-left: 3px solid;
+}
+.qa-issue.qa-level-error { border-color: #dc2626; }
+.qa-issue.qa-level-warn  { border-color: #f59e0b; }
+.qa-issue.qa-level-info  { border-color: #3b82f6; }
+.qa-issue-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.qa-issue-badge { font-size: 0.95rem; }
+.qa-issue-cat {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.qa-issue-detail {
+  font-size: 0.82rem;
+  color: var(--text);
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+.qa-issue-action {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 6px;
+}
+.qa-item-block {
+  margin-top: 6px;
+}
+.qa-item-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.qa-item-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+.qa-var-chip {
+  padding: 3px 9px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #991b1b;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 /* ========== KOSIS Lookup Block ========== */
 .kosis-block {
   margin-top: 10px;

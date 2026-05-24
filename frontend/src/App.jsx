@@ -218,6 +218,7 @@ function App() {
             </div>
 
             <VerdictCard verdict={result.verdict} />
+            {result.qaReport && <QaReport report={result.qaReport} />}
 
             <div className="tab-bar">
               <button className={`tab ${activeTab === 'articles' ? 'active' : ''}`}
@@ -265,6 +266,48 @@ function App() {
       </main>
 
       {modal && <Modal data={modal} onClose={() => setModal(null)} />}
+    </div>
+  )
+}
+
+function QaReport({ report }) {
+  if (!report || !report.issues || report.issues.length === 0) return null
+  const tone = report.has_error ? 'qa-error' : report.has_warn ? 'qa-warn' : 'qa-ok'
+  return (
+    <div className={`qa-report ${tone}`}>
+      <div className="qa-header">
+        <span className="qa-summary">{report.summary}</span>
+        <span className="qa-count">{report.issue_count}건 점검</span>
+      </div>
+      <div className="qa-issues">
+        {report.issues.map((iss, i) => (
+          <div key={i} className={`qa-issue qa-level-${iss.level}`}>
+            <div className="qa-issue-head">
+              <span className="qa-issue-badge">{iss.level === 'error' ? '❌' : iss.level === 'warn' ? '⚠️' : 'ℹ️'}</span>
+              <span className="qa-issue-cat">{iss.category}</span>
+            </div>
+            <div className="qa-issue-detail">{iss.detail}</div>
+            <div className="qa-issue-action">→ {iss.action}</div>
+            {iss.items && (
+              <div className="qa-issue-items">
+                {Object.entries(iss.items).map(([name, vars]) => (
+                  <div key={name} className="qa-item-block">
+                    <div className="qa-item-name">[{name}]</div>
+                    <div className="qa-item-vars">
+                      {vars.map((v, j) => <span key={j} className="qa-var-chip">{v}</span>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {iss.missing_vars && iss.missing_vars.length > 0 && (
+              <div className="qa-item-vars">
+                {iss.missing_vars.map((v, j) => <span key={j} className="qa-var-chip">{v}</span>)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
