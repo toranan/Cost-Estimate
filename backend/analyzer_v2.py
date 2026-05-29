@@ -18,18 +18,21 @@ import base64
 import io
 import json
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import fitz  # PyMuPDF
 
 from .calculator import compute_year_estimates
-from .config import get_env
+from .config import PROJECT_ROOT, SCRIPT_DIR, get_env
 
 try:
     from .kosis_lookup import get_variable as kosis_get_variable, KOSIS_MAP, STATIC_VALUES
@@ -301,10 +304,62 @@ def _post(url: str, headers: dict, payload: Any, timeout: int = 120) -> Any:
 
 # ── PDF + 조문 분할 ───────────────────────────────────────────────────────────
 
+def _strip_data_url(content_b64: str) -> str:
+    if "," in content_b64 and content_b64.startswith("data:"):
+        return content_b64.split(",", 1)[1]
+    return content_b64
+
+
+def _extract_pdf_with_pdfkit(pdf_bytes: bytes) -> str:
+    """Fallback for PDFs where PyMuPDF misses text but macOS PDFKit can read it."""
+    swift_script = SCRIPT_DIR / "extract_pdf_text.swift"
+    if not swift_script.exists():
+        return ""
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = Path(tmp.name)
+
+    environment = {
+        "HOME": "/tmp/swift-home",
+        "CLANG_MODULE_CACHE_PATH": "/tmp/swift-module-cache",
+    }
+    Path(environment["HOME"]).mkdir(parents=True, exist_ok=True)
+    Path(environment["CLANG_MODULE_CACHE_PATH"]).mkdir(parents=True, exist_ok=True)
+    try:
+        completed = subprocess.run(
+            ["swift", str(swift_script), str(tmp_path)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[PDFKit 추출 실패] {exc}\n")
+        return ""
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+    if completed.returncode != 0:
+        sys.stderr.write(f"[PDFKit 추출 실패] {completed.stderr.strip()[:200]}\n")
+        return ""
+
+    text = re.sub(r"<<<PAGE:\d+>>>", "\n", completed.stdout)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def extract_pdf_from_b64(content_b64: str) -> str:
-    pdf_bytes = base64.b64decode(content_b64)
+    pdf_bytes = base64.b64decode(_strip_data_url(content_b64))
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-        return "\n".join(p.get_text() for p in doc).strip()
+        text = "\n".join(p.get_text() for p in doc).strip()
+    if text:
+        return text
+    return _extract_pdf_with_pdfkit(pdf_bytes)
 
 
 def split_articles_regex(text: str) -> list[dict[str, str]]:
@@ -321,26 +376,41 @@ def split_articles_regex(text: str) -> list[dict[str, str]]:
 
 
 _SPLIT_PROMPT = """아래는 한국 법령/조례 PDF에서 추출한 텍스트야.
-본문 조문만 골라서 JSON 배열로 반환해줘.
+비용추계 대상이 되는 조문만 골라서 JSON 배열로 반환해줘.
+
+★ 가장 중요 — 비용추계는 "변경분"만 대상이다 ★
+- 이 문서가 신구조문대비표(현행 vs 개정안) 또는 일부개정안이면,
+  **신설·개정(변경)된 조항만** 추출하고 **현행(기존) 조항은 제외**한다.
+- 현행 조례는 이미 시행 중이라 추가 비용이 없으므로 비용추계 대상이 아니다.
+- "(신설)", "신설", "개정", "<신·구조문대비표>", "현행 | 개정안" 같은 표시를 단서로 사용.
+- 제정안(전체가 신규)이면 모든 본문 조문을 추출한다.
+
+[change_type 판정]
+- "신설": 현행에 없던 조항이 새로 생김
+- "개정": 기존 조항의 내용/금액이 바뀜
+- "삭제": 기존 조항이 없어짐
+- "제정": 제정안이라 전체가 신규
 
 [제외할 것]
+- 신구대비표의 현행(좌측, 변경 없는 기존) 조항
 - 입법예고 안내문 (의견제출, 제출기한 등 행정 안내)
 - "부 칙" 또는 "부칙" 이후 내용
 - "참고 관계법령" / "별표" / "별지" / "참고자료"
-- 조례 본문의 "주요 내용 요약" 같이 정리된 부분
+- "주요 내용 요약" 같이 정리된 부분
 
 [포함할 것]
-- 진짜 조문만 (제1조, 제2조 등 본문 조항)
-- 조 번호, 조 제목, 조 본문 텍스트
+- 신설·개정·삭제된 조항 (제정안이면 전체 본문 조항)
+- 조 번호, 조 제목, 조 본문 텍스트, 변경 유형
 
 [입력 텍스트]
 {text}
 
 [출력 JSON]
 {{
+  "doc_type": "제정안" | "일부개정안" | "신구조문대비표" | "전부개정안",
   "articles": [
-    {{"no": "제1조", "title": "목적", "text": "이 조례는 ..."}},
-    {{"no": "제2조", "title": "정의", "text": "이 조례에서 ..."}}
+    {{"no": "제5조", "title": "지원", "text": "...", "change_type": "신설"}},
+    {{"no": "제6조", "title": "관리비", "text": "...", "change_type": "개정"}}
   ]
 }}
 """
@@ -364,18 +434,23 @@ def _gemini_raw_json(prompt: str) -> Any:
         return None
 
 
-def split_articles(text: str) -> list[dict[str, str]]:
-    """LLM 본문 추출 (1순위) + 정규식 폴백."""
+def split_articles(text: str) -> tuple[list[dict[str, str]], str]:
+    """LLM 본문 추출 (1순위) + 정규식 폴백.
+
+    반환: (조문 리스트, 문서유형). 신구대비표/개정안이면 변경 조항만 포함.
+    """
     if len(text) < 200:
-        return split_articles_regex(text)
+        return split_articles_regex(text), "미상"
 
     excerpt = text[:30000]
     try:
         parsed = _gemini_raw_json(_SPLIT_PROMPT.format(text=excerpt))
+        doc_type = "미상"
         # list 또는 {"articles": [...]} 둘 다 처리
         if isinstance(parsed, list):
             articles_raw = parsed
         elif isinstance(parsed, dict):
+            doc_type = parsed.get("doc_type") or "미상"
             articles_raw = parsed.get("articles") or []
             if not articles_raw and len(parsed) > 0:
                 # 키 이름이 다를 수 있음 — 첫 list value 사용
@@ -393,16 +468,21 @@ def split_articles(text: str) -> list[dict[str, str]]:
             no = (a.get("no") or a.get("number") or "").strip()
             title = (a.get("title") or "").strip()
             body = (a.get("text") or a.get("content") or "").strip()
+            change_type = (a.get("change_type") or "").strip()
             if not no or len(body) < 5:
                 continue
             label = f"{no}({title})" if title else no
-            out.append({"no": label, "text": body[:1500]})
+            out.append({
+                "no": label,
+                "text": body[:1500],
+                "change_type": change_type or "미상",
+            })
         if out:
-            return out
+            return out, doc_type
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"[LLM 조문 분할 실패, 정규식 폴백] {exc}\n")
 
-    return split_articles_regex(text)
+    return split_articles_regex(text), "미상"
 
 
 # ── 임베딩 + 벡터 검색 ─────────────────────────────────────────────────────────
@@ -847,10 +927,19 @@ def analyze_v2(filename: str, content_b64: str) -> dict[str, Any]:
     # 1) PDF 추출
     text = extract_pdf_from_b64(content_b64)
     if not text:
-        raise ValueError("PDF에서 텍스트를 추출하지 못했습니다.")
-    articles = split_articles(text)
+        raise ValueError("PDF에서 텍스트를 추출하지 못했습니다. (스캔본이면 OCR 필요)")
+    articles, doc_type = split_articles(text)
     if not articles:
         raise ValueError("조문이 탐지되지 않았습니다.")
+
+    # 개정안/신구대비표면 "변경분만 분석됨" 안내
+    if doc_type in ("일부개정안", "신구조문대비표", "전부개정안"):
+        workflow_issues.append({
+            "level": "info",
+            "category": f"문서 유형: {doc_type}",
+            "detail": f"{doc_type}이므로 신설·개정된 조항만 비용추계 대상으로 분석했습니다. (현행 조항 제외)",
+            "action": "변경분 기준 추가 재정소요만 산정됩니다.",
+        })
 
     # 조례안명 추출 (PDF 첫 줄에서)
     first_lines = text[:500].split("\n")
@@ -1167,6 +1256,7 @@ def analyze_v2(filename: str, content_b64: str) -> dict[str, Any]:
     return {
         "filename":     filename,
         "billName":     bill_name,
+        "docType":      doc_type,
         "generatedAt":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "elapsedSec":   round(time.time() - t0, 1),
         "totalArticles": len(articles),
