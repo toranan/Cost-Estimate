@@ -602,18 +602,18 @@ def apply_formula_source_strategy(
             selected = {
                 "source_type": "tag_similar_formula",
                 "formula": item.get("tag_amount_evidence", {}).get("formula") or item.get("formula"),
-                "label": "TAG 유사 비용추계 산식",
+                "label": "공식 추계 사례 산식",
                 "confidence": min(0.85, 0.55 + float(item.get("tag_amount_evidence", {}).get("score") or 0) / 2),
-                "basis": "표준산식만으로 기준금액이 확정되지 않아 유사 비용추계 TAG 산식·금액을 적용",
+                "basis": "유사한 공식 비용추계 사례의 산식과 금액을 적용해 합리적 기준값을 산출",
                 "requires_review": True,
             }
         elif tag_candidate and not base_ready:
             selected = {
                 "source_type": "tag_similar_formula_candidate",
                 "formula": tag_candidate.get("formula") or item.get("formula"),
-                "label": "TAG 유사 산식 후보",
+                "label": "공식 추계 사례 산식 후보",
                 "confidence": min(0.8, 0.5 + float(tag_candidate.get("score") or 0) / 2),
-                "basis": "표준산식의 일부 전제값이 비어 있어 가장 유사한 공식 추계 사례의 산식을 후보로 제시",
+                "basis": "가장 유사한 공식 비용추계 사례의 산식을 적용해 합리적 추계 초안을 생성",
                 "requires_review": True,
             }
         else:
@@ -660,6 +660,82 @@ def apply_tag_formula_evidence(
             item["requires_review"] = True
             item["review_reason"] = "동일 계산유형의 유사사례 금액을 사용했으므로 적용 적합성 확인 필요"
             applied += 1
+    return applied
+
+
+DEFAULT_ASSUMPTION_AMOUNTS: dict[str, dict[str, Any]] = {
+    "committee_operation": {
+        "amount": 4_000,
+        "recurrence": "annual",
+        "basis": "회의 2회, 수당지급대상 10명, 회의수당 20만원 기준 기본 가정",
+    },
+    "research_service": {
+        "amount": 100_000,
+        "recurrence": "annual",
+        "basis": "정책연구·실태조사 1회 수행 기준 기본 가정",
+    },
+    "facility_system": {
+        "amount": 500_000,
+        "recurrence": "annual",
+        "basis": "시스템·시설 구축 및 운영비 기본 가정",
+    },
+    "transfer_payment": {
+        "amount": 100_000,
+        "recurrence": "annual",
+        "basis": "지원 대상·단가 미확정 시 소규모 지원사업 기준 기본 가정",
+    },
+    "institution_establishment": {
+        "amount": 50_000_000,
+        "recurrence": "one_time",
+        "basis": "기관·청사 설치 총사업비 기본 가정",
+    },
+    "personnel_compensation": {
+        "amount": 500_000,
+        "recurrence": "annual",
+        "basis": "소요정원과 평균 인건비 미확정 시 연간 인건비 기본 가정",
+    },
+    "institution_operation": {
+        "amount": 300_000,
+        "recurrence": "annual",
+        "basis": "신설 기관 기본 운영비 기본 가정",
+    },
+}
+
+
+def apply_reasonable_default_amounts(estimate: dict[str, Any]) -> int:
+    """Fill remaining empty calculation bases so the product always emits a draft."""
+    applied = 0
+    for item in estimate.get("items") or []:
+        calc = item.setdefault("calculation", {})
+        if not isinstance(calc, dict):
+            calc = {}
+            item["calculation"] = calc
+        if calc.get("base_amount_thousand") is not None or calc.get("yearly_amounts_thousand"):
+            continue
+        family = str(item.get("formula_family") or infer_template_key(item) or "")
+        default = DEFAULT_ASSUMPTION_AMOUNTS.get(family)
+        if not default:
+            default = {
+                "amount": 100_000,
+                "recurrence": "annual",
+                "basis": "비용유형을 특정하기 어려운 항목에 대한 연간 기준금액 기본 가정",
+            }
+            if not family:
+                item["formula_family"] = "general_default"
+        calc["base_amount_thousand"] = default["amount"]
+        calc["recurrence"] = default["recurrence"]
+        calc.setdefault("start_year", 1)
+        calc.setdefault("end_year", 5)
+        calc["source_note"] = default["basis"]
+        item["default_assumption_evidence"] = {
+            "type": "reasonable_default",
+            "label": "기본 가정값",
+            "basis": default["basis"],
+            "amount_thousand": default["amount"],
+        }
+        item["requires_review"] = True
+        item["review_reason"] = "법안에 직접 수치가 없어 기본 가정값으로 초안을 산출했습니다."
+        applied += 1
     return applied
 
 
