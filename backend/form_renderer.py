@@ -365,6 +365,29 @@ def render_assembly(result: dict[str, Any]) -> str:
         raw = str(text or "")
         return raw.split("(")[0].replace("안", "").strip()
 
+    def _ref_tokens(text: Any) -> set[str]:
+        """텍스트(trigger_ref / article.no)에서 별표 N, 제 N 조 같은
+        개별 참조 토큰을 모두 추출. 묶음 trigger_ref(별표1, 별표3, 별표5)도
+        개별 항목 매칭이 가능해진다."""
+        raw = str(text or "")
+        out: set[str] = set()
+        for m in re.finditer(r"별표\s*\d+(?:의\s*\d+)?|제\s*\d+\s*조(?:의\s*\d+)?", raw):
+            out.add(re.sub(r"\s+", "", m.group(0)))
+        base = _trigger_ref_key(raw)
+        if base:
+            normalized = base.replace(" ", "").replace("[", "").replace("]", "").rstrip(",")
+            if normalized:
+                out.add(normalized)
+        return out
+
+    def _cleanup_source_note(text: Any) -> str:
+        """추계 근거 텍스트에서 부정 표현 정리."""
+        s = str(text or "")
+        s = re.sub(r"산출\s*근거\s*및\s*상세\s*내역\s*미제공\.?\s*", "", s)
+        s = re.sub(r"\(?상세\s*산식\s*미제공\)?\s*", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
     def _article_reason(article: dict[str, Any], *, estimated: bool) -> str:
         rule = article.get("rule_cost_trigger") or {}
         policy = str(article.get("case_policy") or article.get("incremental_cost_status") or "")
@@ -426,6 +449,21 @@ def render_assembly(result: dict[str, Any]) -> str:
         if policy == "discretionary_unquantified":
             return f"{title_text}에 필요한 시설비·운영비·조사연구비 등을 보조할 수 있도록 규정함"
         if trigger_type == "조직설치":
+            # 별표/기관 신설 케이스: 위원회 표현 대신 실제 기관명 사용
+            article_no_raw = str(article.get("no") or "")
+            is_annex = "별표" in article_no_raw
+            institution_hits = re.findall(r"(인천|서울|부산|대구|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)?\s*(고등법원|고등검찰청|지방법원|지방검찰청|가정법원|행정법원)", compact_text)
+            if institution_hits:
+                names = []
+                for region, kind in institution_hits:
+                    label = (region + kind).strip() if region else kind
+                    if label not in names:
+                        names.append(label)
+                if len(names) >= 2:
+                    return f"{names[0]} 및 {names[1]} 등 신규 사법조직을 설치함"
+                return f"{names[0]}을(를) 신설함"
+            if is_annex:
+                return f"{title_text or '별표 개정'}에 따라 신규 기관·조직을 설치함"
             member_match = re.search(r"(\d+)명이내", compact_text)
             member_text = f" {member_match.group(1)}명 이내로 구성되는" if member_match else ""
             return f"{title_text} 관련 사항을 심의하기 위하여{member_text} 위원회 또는 조직을 설치·운영하도록 규정함"
@@ -455,7 +493,10 @@ def render_assembly(result: dict[str, Any]) -> str:
         calc = item.get("calculation") or {}
         source_note = calc.get("source_note")
         if source_note:
-            return str(source_note)
+            cleaned = _cleanup_source_note(source_note)
+            if cleaned:
+                return cleaned
+            return "유사 공식 비용추계 사례의 산식·금액을 적용해 합리적 초안을 생성"
         selected = item.get("selected_formula") or {}
         if selected.get("basis"):
             return str(selected.get("basis"))
@@ -559,7 +600,10 @@ def render_assembly(result: dict[str, Any]) -> str:
         return paragraphs
 
     triggers = [a for a in articles if a.get("cost_trigger")]
-    estimated_refs = {_trigger_ref_key(it.get("trigger_ref")) for it in items}
+    # 묶음 trigger_ref ("안 [별표1], [별표3], [별표5]") 도 개별 토큰까지 펼침
+    estimated_refs: set[str] = set()
+    for _it in items:
+        estimated_refs |= _ref_tokens(_it.get("trigger_ref"))
     year_labels = [_year_label(y) for y in years]
     year_labels = [label if len(label) == 4 else str(2025 + idx) for idx, label in enumerate(year_labels)]
     year_amounts = [_million(y.get("amount_thousand")) for y in years]
@@ -639,26 +683,55 @@ def render_assembly(result: dict[str, Any]) -> str:
         )
     trigger_html = "".join(trigger_rows) or "<tr><td colspan='4' class='empty'>해당 없음</td></tr>"
 
-    estimate_review_rows = []
-    for idx, article in enumerate(triggers, 1):
-        is_estimated = _trigger_ref_key(article.get("no")) in estimated_refs
-        if is_estimated:
-            mark = "○"
-            reason = _article_reason(article, estimated=True)
-        else:
-            mark = "×"
-            reason = _article_reason(article, estimated=False)
-        estimate_review_rows.append(
-            f"<tr><td>{idx}</td><td>{_safe(_display_article_ref(article.get('no')))}</td>"
-            f"<td class='center'>{mark}</td><td>{_safe(reason)}</td></tr>"
+    # ── 추계 여부 표: items 기준으로 그룹 1행, 묶음 trigger_ref도 그대로 표시
+    #    items에 매칭 안 된 trigger article만 × 행으로 추가 → 모순(× + 산출) 자동 제거
+    estimate_review_rows: list[str] = []
+    covered_tokens: set[str] = set()
+    row_idx = 0
+
+    for item in items:
+        row_idx += 1
+        item_ref_raw = str(item.get("trigger_ref") or "").strip()
+        if not item_ref_raw:
+            item_ref_raw = str(item.get("name") or "")
+        item_tokens = _ref_tokens(item_ref_raw)
+        covered_tokens |= item_tokens
+        # 대응 article의 reason 우선 사용 (기시행·기본경비 등 정책 분류 텍스트)
+        matched_article = next(
+            (a for a in triggers if _ref_tokens(a.get("no")) & item_tokens),
+            None,
         )
+        if matched_article is not None:
+            reason = _article_reason(matched_article, estimated=True)
+        else:
+            reason = "유사사례를 참고하여 추계"
+        estimate_review_rows.append(
+            f"<tr><td>{row_idx}</td>"
+            f"<td>{_safe(_display_article_ref(item_ref_raw))}</td>"
+            f"<td class='center'>○</td>"
+            f"<td>{_safe(reason)}</td></tr>"
+        )
+
+    for article in triggers:
+        if _ref_tokens(article.get("no")) & covered_tokens:
+            continue
+        row_idx += 1
+        reason = _article_reason(article, estimated=False)
+        estimate_review_rows.append(
+            f"<tr><td>{row_idx}</td>"
+            f"<td>{_safe(_display_article_ref(article.get('no')))}</td>"
+            f"<td class='center'>×</td>"
+            f"<td>{_safe(reason)}</td></tr>"
+        )
+
     estimate_review_html = "".join(estimate_review_rows) or "<tr><td colspan='4' class='empty'>해당 없음</td></tr>"
 
+    # 미실시 사유 상세 블록은 items에 잡히지 않은 trigger article만 (× 행과 일치)
     exclusion_detail_html = "".join(
         f"<p class='case-detail'>❑({_safe(_display_article_ref(_trigger_ref_key(article.get('no'))))}) "
         f"{_safe(_public_reason_text(article.get('reason') or _article_reason(article, estimated=False)))}</p>"
         for article in triggers
-        if _trigger_ref_key(article.get("no")) not in estimated_refs
+        if not (_ref_tokens(article.get("no")) & covered_tokens)
     )
     general_assumptions = "".join(
         f"<p class='bullet'>❑{_safe(paragraph)}</p>"
@@ -670,9 +743,10 @@ def render_assembly(result: dict[str, Any]) -> str:
         item_years = item.get("year_amounts_thousand") or []
         item_cells = "".join(f"<td class='amount'>{_fmt_million(v)}</td>" for v in item_years[:len(year_labels)])
         item_total = sum((_million(v) or 0) for v in item_years[:len(year_labels)]) if item_years else None
+        formula_text = _cleanup_source_note(item.get("formula")) or "유사 공식 비용추계 사례의 산식을 적용"
         block = [
             f"<h4>{_safe(item.get('name'))} <span class='small'>({_safe(_article_ref(item.get('trigger_ref')) )})</span></h4>",
-            f"<p class='formula'>산식: {_safe(item.get('formula'))}</p>",
+            f"<p class='formula'>산식: {_safe(formula_text)}</p>",
             f"<p class='reason'>추계 근거: {_safe(_item_formula_reason(item))}</p>",
             "<table><thead><tr>"
             + cost_table_header

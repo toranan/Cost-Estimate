@@ -4,6 +4,7 @@ import unittest
 
 from backend.assembly_formula_engine import (
     apply_formula_source_strategy,
+    apply_reasonable_default_amounts,
     apply_tag_formula_evidence,
     build_generalized_estimate,
     classify_estimation_status,
@@ -402,6 +403,97 @@ class AssemblyFormulaEngineTest(unittest.TestCase):
         self.assertEqual(status["code"], "needs_external_data")
         self.assertNotEqual(status["code"], "technically_infeasible")
         self.assertIn("지원 대상자 수", status["missing"]["external_data"]["급여의 지급 지원 소요"])
+
+    def test_reasonable_defaults_emit_draft_when_tag_is_missing(self) -> None:
+        articles = [{
+            "no": "제20조(센터 설치)",
+            "text": "장관은 센터를 설치하고 필요한 시스템을 구축하여 운영할 수 있다.",
+            "cost_trigger": True,
+            "cost_candidate_strength": "medium",
+            "trigger_type": "시설구축",
+            "rule_cost_trigger": {"rule": "facility_or_system"},
+        }]
+        estimate = build_generalized_estimate(articles)
+
+        self.assertIsNotNone(estimate)
+        self.assertEqual(apply_reasonable_default_amounts(estimate), 1)
+        item = estimate["items"][0]
+        self.assertEqual(item["calculation"]["base_amount_thousand"], 500_000)
+        calculated, issues = compute_year_estimates(estimate, tag_patterns=[], allow_estimated=True)
+        self.assertTrue(calculated)
+        self.assertFalse([issue for issue in issues if issue.get("level") == "error"])
+
+    def test_high_court_establishment_uses_judicial_institution_template(self) -> None:
+        from backend.analyzer_v2 import _build_public_organization_establishment_estimate
+
+        text = (
+            "각급 법원의 설치와 관할구역에 관한 법률 일부개정법률안 "
+            "별표1의 서울고등법원란 다음에 인천고등법원란을 신설한다. "
+            "부칙 이 법은 2029년 3월 1일부터 시행한다."
+        )
+        articles = [{
+            "no": "안 [별표1], [별표3] 및 [별표5]",
+            "text": "인천광역시와 부천시·김포시를 관할하는 인천고등법원을 설치함",
+            "cost_trigger": True,
+            "cost_candidate_strength": "strong",
+            "trigger_type": "조직설치",
+        }]
+
+        estimate = _build_public_organization_establishment_estimate(
+            text,
+            articles,
+            form_type="assembly",
+        )
+
+        self.assertIsNotNone(estimate)
+        self.assertEqual(estimate["template_key"], "public_organization_establishment.judicial_high_court")
+        self.assertEqual([row["amount_thousand"] for row in estimate["year_estimates"]], [6_698_000, 7_837_000, 7_987_000, 8_141_000, 8_296_000])
+        self.assertEqual(estimate["total_amount_thousand"], 38_959_000)
+        self.assertEqual([item["name"] for item in estimate["items"]], ["인천고등법원 운영비용", "인천고등검찰청 운영비용"])
+
+    def test_tag_full_structure_is_promoted_to_estimate(self) -> None:
+        from backend.analyzer_v2 import _build_estimate_from_tag_pattern
+
+        pattern = {
+            "bill_no": "2126648",
+            "bill_name": "각급 법원의 설치와 관할구역에 관한 법률 일부개정법률안",
+            "items": [
+                {
+                    "category": "운영비",
+                    "name": "인천고등법원 신설 비용",
+                    "trigger_ref": "안 [별표1], [별표3], [별표5]",
+                    "variables": [{"name": "신규 충원 공무원 수", "value": 24, "unit": "명"}],
+                    "amounts": [
+                        {"year_label": "2029", "year_offset": 1, "amount_thousand": 2_687_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2030", "year_offset": 2, "amount_thousand": 3_131_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2031", "year_offset": 3, "amount_thousand": 3_191_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2032", "year_offset": 4, "amount_thousand": 3_253_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2033", "year_offset": 5, "amount_thousand": 3_315_000, "formula": "TAG 산식", "is_total": False},
+                    ],
+                },
+                {
+                    "category": "운영비",
+                    "name": "인천고등검찰청 신설 비용",
+                    "trigger_ref": "검찰청법 제3조",
+                    "variables": [{"name": "신규 충원 공무원 수", "value": 31, "unit": "명"}],
+                    "amounts": [
+                        {"year_label": "2029", "year_offset": 1, "amount_thousand": 4_011_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2030", "year_offset": 2, "amount_thousand": 4_706_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2031", "year_offset": 3, "amount_thousand": 4_796_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2032", "year_offset": 4, "amount_thousand": 4_888_000, "formula": "TAG 산식", "is_total": False},
+                        {"year_label": "2033", "year_offset": 5, "amount_thousand": 4_981_000, "formula": "TAG 산식", "is_total": False},
+                    ],
+                },
+            ],
+        }
+
+        estimate = _build_estimate_from_tag_pattern(pattern, similarity=0.93)
+
+        self.assertIsNotNone(estimate)
+        self.assertEqual(estimate["template_key"], "tag_full_structure")
+        self.assertEqual(estimate["calculation_status"], "computed_with_tag_structure")
+        self.assertEqual([row["amount_thousand"] for row in estimate["year_estimates"]], [6_698_000, 7_837_000, 7_987_000, 8_141_000, 8_296_000])
+        self.assertEqual(estimate["total_amount_thousand"], 38_959_000)
 
     def test_institution_is_split_into_composite_costs(self) -> None:
         articles = [

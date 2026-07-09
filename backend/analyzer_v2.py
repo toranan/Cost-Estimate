@@ -1293,12 +1293,16 @@ def _build_estimate_from_tag_pattern(
     max_years = 0
 
     for tag_item in tag_items:
+        tagged_name = str(tag_item.get("name") or "")
+        # 원본 추계서의 합계·총계 행은 개별 항목과 중복(이중계산)이므로 차용에서 제외
+        compact_item_name = re.sub(r"\s+", "", tagged_name)
+        if tag_item.get("is_total") or compact_item_name in {"합계", "총계", "계", "소계", "총합계", "연간총계"}:
+            continue
         amount_rows = _annual_tag_amounts(tag_item)
         if not amount_rows:
             continue
         series = [_safe_int_amount(row.get("amount_thousand")) or 0 for row in amount_rows]
         max_years = max(max_years, len(series))
-        tagged_name = str(tag_item.get("name") or "")
         first_formula = next(
             (
                 str(row.get("formula") or "")
@@ -3359,6 +3363,26 @@ def analyze_v2(filename: str, content_b64: str, form_type: str = "gyeonggi") -> 
             vector_search(art_emb, source="national_assembly", doc_type="cost_estimate", k=2)
             if art_emb else []
         )
+        # ── Dual-Channel: 유사 미첨부 사유서도 함께 검색 (kNN verdict 신호)
+        art_non_attach = (
+            vector_search(art_emb, source="national_assembly", doc_type="non_attachment_reason", k=3)
+            if art_emb else []
+        )
+        cost_sims = [float(x.get("similarity") or 0) for x in art_similar]
+        na_sims = [float(x.get("similarity") or 0) for x in art_non_attach]
+        knn_channels = {
+            "cost_avg": round(sum(cost_sims) / len(cost_sims), 4) if cost_sims else 0.0,
+            "non_attach_avg": round(sum(na_sims) / len(na_sims), 4) if na_sims else 0.0,
+            "non_attach_top": round(max(na_sims), 4) if na_sims else 0.0,
+            "non_attach_refs": [
+                {
+                    "bill_no": x.get("bill_no"),
+                    "bill_name": (x.get("bill_name") or "")[:60],
+                    "similarity": round(float(x.get("similarity") or 0), 4),
+                }
+                for x in art_non_attach[:3]
+            ],
+        }
         prompt = ARTICLE_PROMPT.format(
             article_text=art["text"], legal_ref=legal_ref[:2000],
         )
@@ -3388,6 +3412,7 @@ def analyze_v2(filename: str, content_b64: str, form_type: str = "gyeonggi") -> 
                 }
                 for c in art_similar
             ],
+            "knn_channels": knn_channels,
         }
 
     # 3-C. 병렬 실행 (Gemini RPM 고려해 동시 6개)
@@ -3922,21 +3947,128 @@ def analyze_v2(filename: str, content_b64: str, form_type: str = "gyeonggi") -> 
         and article.get("cost_candidate_strength") == "strong"
         and article.get("estimate_feasibility") == "formula_ready"
     ]
+    # ── NABO 존재 게이트(existence gate) 원칙:
+    #    산출 가능한 조문(strong formula: 위원 정수·증원 인원·보수 명시)이
+    #    하나라도 있으면 그 조문만으로 "일부추계"를 작성한다 (다수결 아님).
+    #    미첨부는 산출 가능 조문이 0개일 때만 허용.
+    has_computable_article = bool(strong_formula_candidates)
+
+    # 미첨부 후보가 강한 산식 후보 대비 우세하면 items 있어도 미첨부로 강제 전환.
+    # (조직 신설 조문 다수 + 대통령령 위임 다수 케이스에서 산출 강제 방지)
+    rule_non_attach_dominance = (
+        not has_computable_article
+        and len(non_attachment_candidates) >= 3
+        and len(non_attachment_candidates) >= max(2, len(strong_formula_candidates) * 2)
+    )
+
+    # ── Dual-Channel kNN verdict 신호 (데이터 기반, 규칙보다 우선)
+    #    각 비용유발 조문의 유사 비용추계서 채널(A) vs 유사 미첨부 사유서 채널(B)
+    #    유사도를 비교. B가 우세하거나 강한 미첨부 매칭이 다수면 미첨부 신호.
+    knn_signals = [
+        a.get("knn_channels") for a in article_results
+        if a.get("cost_trigger") and isinstance(a.get("knn_channels"), dict)
+    ]
+    knn_b_dominant = sum(
+        1 for s in knn_signals
+        if s.get("non_attach_avg", 0) > s.get("cost_avg", 0)
+    )
+    knn_strong_b = sum(1 for s in knn_signals if s.get("non_attach_top", 0) >= 0.70)
+
+    # 동일 법률의 미첨부 선례: 같은 법 개정안을 NABO가 미첨부 처리한 사례가
+    # 강하게 매칭(0.70+)되면 가장 강력한 선례로 본다.
+    def _norm_law_name(value: Any) -> str:
+        s = re.sub(r"\s+", "", str(value or ""))
+        return re.sub(r"(일부개정법률안|전부개정법률안|개정법률안|법률안|법안)$", "", s)
+
+    _current_law = _norm_law_name(bill_name)
+    knn_same_law_na = bool(_current_law) and any(
+        float(ref.get("similarity") or 0) >= 0.70
+        and _norm_law_name(ref.get("bill_name")) == _current_law
+        for s in knn_signals
+        for ref in (s.get("non_attach_refs") or [])
+    )
+    # 단일 조문 의안 보완: 거의 동일 사안의 미첨부 사례(0.80+)가 존재하거나,
+    # 강한 매칭(0.72+) + 채널 간 명확한 마진(0.08+)이면 조문 수와 무관하게 발동.
+    knn_very_strong_single = any(
+        s.get("non_attach_top", 0) >= 0.80
+        or (
+            s.get("non_attach_top", 0) >= 0.72
+            and s.get("non_attach_avg", 0) - s.get("cost_avg", 0) >= 0.08
+        )
+        for s in knn_signals
+    )
+    knn_non_attach_dominance = (
+        not has_computable_article
+        and (
+            knn_same_law_na
+            or knn_very_strong_single
+            or (
+                len(knn_signals) >= 2
+                and (
+                    knn_b_dominant >= max(2, int(len(knn_signals) * 0.5))
+                    or knn_strong_b >= 2
+                )
+            )
+        )
+    )
+    if knn_non_attach_dominance:
+        strongest = max(knn_signals, key=lambda s: s.get("non_attach_top", 0))
+        top_refs = strongest.get("non_attach_refs") or []
+        workflow_issues.append({
+            "level": "info",
+            "category": "유사 미첨부 사례 kNN 매칭",
+            "detail": (
+                f"비용유발 조문 {len(knn_signals)}개 중 {knn_b_dominant}개에서 유사 미첨부 사유서 "
+                f"채널이 유사 비용추계서 채널보다 우세하고, 강한 매칭(유사도 0.70+)이 {knn_strong_b}건 "
+                f"확인되어 미첨부 사유서 작성 대상으로 판단했습니다."
+            ),
+            "action": "유사 미첨부 사례: " + ", ".join(
+                f"{r.get('bill_name')}({r.get('similarity')})" for r in top_refs[:2]
+            ),
+        })
+
+    non_attach_dominance = rule_non_attach_dominance or knn_non_attach_dominance
+
     if (
         form_type == "assembly"
         and not final.get("if_non_attachment")
-        and not _has_computed_amounts(estimate)
-        and not (estimate and estimate.get("items"))
-        and non_attachment_candidates
-        and not strong_formula_candidates
+        and (non_attachment_candidates or knn_non_attach_dominance)
+        and (
+            (
+                not _has_computed_amounts(estimate)
+                and not (estimate and estimate.get("items"))
+                and not strong_formula_candidates
+            )
+            or non_attach_dominance
+        )
     ):
-        primary = non_attachment_candidates[0]
+        if non_attachment_candidates:
+            primary = non_attachment_candidates[0]
+        else:
+            # kNN 단독 케이스: 미첨부 매칭이 가장 강한 비용유발 조문을 대표로
+            trigger_articles = [
+                a for a in article_results
+                if a.get("cost_trigger") and isinstance(a.get("knn_channels"), dict)
+            ]
+            primary = max(
+                trigger_articles,
+                key=lambda a: (a.get("knn_channels") or {}).get("non_attach_top", 0),
+            ) if trigger_articles else {}
         ref = primary.get("no") or "해당 조문"
+        knn_ref_names = [
+            r.get("bill_name")
+            for r in ((primary.get("knn_channels") or {}).get("non_attach_refs") or [])[:2]
+            if r.get("bill_name")
+        ]
+        knn_reason = (
+            f"유사 미첨부 사례({', '.join(knn_ref_names)})에서도 동일한 사유로 "
+            "비용추계서를 첨부하지 않았습니다. " if knn_ref_names and knn_non_attach_dominance else ""
+        )
         reason = (
             primary.get("review_reason")
             or (primary.get("rule_cost_trigger") or {}).get("review_reason")
             or "구체적인 사업 범위와 산식 전제값이 법률안에 명시되지 않아 기술적으로 비용추계가 곤란합니다."
-        )
+        ) + (" " + knn_reason if knn_reason else "")
         final["if_non_attachment"] = {
             "type": "3호",
             "reason_text": (
@@ -3946,13 +4078,21 @@ def analyze_v2(filename: str, content_b64: str, form_type: str = "gyeonggi") -> 
                 "기술적으로 추계가 어려운 경우에 해당합니다."
             ),
         }
+        # dominance 케이스: 이미 산출된 items가 있으면 무효화 (미첨부 우선)
+        if non_attach_dominance and estimate:
+            estimate["items"] = []
+            estimate["year_estimates"] = []
+            estimate["calculation_status"] = "non_attachment_dominant"
 
-    # 미첨부 사유와 비용추계서가 동시에 생성된 경우에도 실제 계산 금액이 없으면 미첨부 사유서를 우선한다.
+    # 미첨부 사유서가 생성된 경우: items 유무 관계없이 미첨부로 전환.
+    # (조직 신설 우세 케이스에서 items가 남아있어도 미첨부 사유서를 최종 결과로 사용)
     non_attachment = final.get("if_non_attachment")
     if (
         isinstance(non_attachment, dict)
-        and not _has_computed_amounts(estimate)
-        and not (estimate and estimate.get("items"))
+        and (
+            (not _has_computed_amounts(estimate) and not (estimate and estimate.get("items")))
+            or non_attach_dominance
+        )
     ):
         non_attachment["reason_text"] = _public_non_attachment_text(non_attachment.get("reason_text"))
         na_verdict, na_label = _non_attachment_verdict(non_attachment.get("type"))

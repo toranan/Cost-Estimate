@@ -314,6 +314,34 @@ def apply_validated_case_policy(
         ):
             article["case_policy"] = "delegated_scope_technical_difficulty"
 
+        # ── 조직 신설 + 대통령령 위임 다수 + 구체 정원 미명시
+        #    → 미첨부 3호(기술적 곤란) 후보로 분류
+        #    (중대범죄수사청·공소청 등 검찰조직 신설 케이스)
+        if article.get("trigger_type") == "조직설치":
+            delegation_hits = len(re.findall(
+                r"대통령령으로정한다|대통령령이정하는|대통령령으로정하는바에|부령으로정한다",
+                text,
+            ))
+            has_concrete_size = bool(re.search(
+                r"\d+명이내|\d+명으로구성|위원장.{0,15}\d+명|정원.{0,25}\d+명"
+                r"|차관.{0,10}(예에준|보수)|과장급|사무처장",
+                text,
+            ))
+            if delegation_hits >= 2 and not has_concrete_size:
+                article["case_policy"] = "organization_delegation_heavy"
+                article["estimate_feasibility"] = "non_attachment_review"
+                article["non_attachment_risk"] = "high"
+                article["cost_candidate_strength"] = "medium"
+                article["exclusion_basis"] = (
+                    "조직 신설 재정소요 예상, 조직구조·정원 대통령령 위임"
+                )
+                article["reason"] = (
+                    "조직 신설에 따른 추가재정소요가 예상되나 조직구조·정원·직급 등 "
+                    "핵심 산정 변수가 대통령령에 위임되어 현 단계에서 합리적 추정이 곤란하여 "
+                    "미첨부 3호(기술적 곤란) 검토 대상으로 분류합니다."
+                )
+                article["review_reason"] = article["reason"]
+
     # LLM 단독 후보는 공공 재정지출 근거가 조문이나 결정 규칙에서 확인될 때만 유지한다.
     # 면허·등록·교육·신고 같은 통상 행정과 민간기관 자체 의무를 재정수반요인으로
     # 과대 분류하는 것을 막되, 규칙 엔진이 포착한 지원·조직·조사 후보는 보존한다.
