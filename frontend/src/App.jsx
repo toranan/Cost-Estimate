@@ -278,8 +278,6 @@ function App() {
             </div>
 
             <VerdictCard verdict={result.verdict} field={result.field} />
-            {result.qaReport && <QaReport report={result.qaReport} />}
-
             <div className="tab-bar">
               <button className={`tab ${activeTab === 'estimate' ? 'active' : ''}`}
                 onClick={() => setActiveTab('estimate')}>
@@ -331,10 +329,6 @@ function App() {
       {modal && <Modal data={modal} onClose={() => setModal(null)} />}
     </div>
   )
-}
-
-function QaReport({ report }) {
-  return null
 }
 
 function VariableEditorPanel({

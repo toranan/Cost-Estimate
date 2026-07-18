@@ -1,304 +1,244 @@
 <div align="center">
 
-# 🏛️ ORCA — 법안 비용추계 자동화 시스템
+# ORCA
 
-**LLM의 추론과 결정적 계산을 분리한 TAG 아키텍처로,**
-**국회예산정책처 표준 양식의 비용추계서를 자동 생성합니다.**
+### 법안 PDF에서 근거를 추적할 수 있는 비용추계서 초안까지
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+LLM의 문서 해석, 유사 사례 검색, 정책 규칙, 결정적 계산을 분리한
+법안·조례안 비용추계 지원 시스템입니다.
+
+[![CI](https://github.com/toranan/Cost-Estimate/actions/workflows/ci.yml/badge.svg)](https://github.com/toranan/Cost-Estimate/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
-[![Gemini](https://img.shields.io/badge/Gemini-2.5_Pro-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
 [![Supabase](https://img.shields.io/badge/Supabase-pgvector-3FCF8E?logo=supabase&logoColor=white)](https://supabase.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-[데모 결과](#-검증-결과--간호법안-2126640) · [아키텍처](#-아키텍처) · [빠른 시작](#-빠른-시작) · [기술 스택](#-기술-스택)
+[제품 흐름](#제품-흐름) · [아키텍처](#아키텍처) · [검증](#검증-현황) · [기여 범위](#프로젝트-맥락과-기여-범위) · [실행](#로컬-실행)
 
 </div>
 
----
+![ORCA PDF 업로드 화면](./docs/assets/product-home.png)
 
-## 💡 한 줄 요약
+## 프로젝트 한눈에 보기
 
-> **법안·조례안 PDF 한 장만 넣으면, 국회예산정책처(NABO) 표준 양식의 비용추계서가 자동으로 나옵니다.**
-> 그리고 **모든 가정값(회의수당·인건비·물가상승률 등)이 어디서 왔는지 추계서 본문에 자동으로 박힙니다.**
-
----
-
-## 🎯 왜 만들었나
-
-| 기존 현실 | ORCA의 해결 |
+| 구분 | 내용 |
 |---|---|
-| NABO 분석관이 추계서 한 건에 사안에 따라 **수일~수주** 소요 | PDF 업로드 → **수 분 내** 초안 생성 |
-| 가정값 출처 추적 어려움 ("이 단가 어디서?") | 모든 가정값에 `evidence_trace` 자동 기록 |
-| LLM에 통째로 맡기면 **숫자에서 환각** | LLM은 변수 추출만, **Python이 결정적 계산** |
-| 지자체 조례안은 자체 추계 체계가 미비한 곳도 다수 | NABO 양식과 동일 구조로 즉시 적용 가능 |
+| 문제 | LLM 단독 비용추계의 근거 없는 가정, 산술 오류, 결과 검증의 어려움 |
+| 입력 | 텍스트가 포함된 법안·조례안 PDF |
+| 출력 | 조문별 재정수반 판단, 유사 선례와 출처, 5개년 비용 초안, 공식 양식 문서 |
+| 핵심 설계 | 문서 해석은 LLM, 검색은 RAG/TAG, 정책 보정과 계산은 Python |
+| 사용자 검토 | 전제값을 수정하면 서버가 연도별 금액과 분류 기준을 재계산 |
+| 현재 단계 | 포트폴리오용 기능 검증 프로토타입. 실제 행정 의사결정에는 전문가 검토 필요 |
 
----
+ORCA는 “LLM이 추계서를 대신 작성한다”보다 **AI가 만든 초안을 사람이 검증하고 수정할 수 있게 만드는 것**에 초점을 둡니다.
 
-## ✅ 검증 결과 — 실제 의안 8건, NABO 원본과 8건 모두 방향 일치
+## 제품 흐름
 
-국회예산정책처(NABO) 원본 추계 문서(비용추계서 / 미첨부 사유서)와 블라인드 비교.
-**학습 풀에 없는 신규 의안 5건 포함**, 산출/미첨부 양방향 모두 검증했습니다.
+1. 사용자가 법안 또는 조례안 PDF와 적용 양식을 선택합니다.
+2. PDF 본문과 신구조문대비표에서 개정 조문을 구조화합니다.
+3. 각 조문을 유사 비용추계서와 미첨부 사유서 두 채널에서 검색합니다.
+4. LLM 판단을 법정 금액 기준과 도메인 규칙으로 보정하고, Python이 비용을 계산합니다.
+5. 사용자는 판단 근거와 전제값을 검토하고 수정한 뒤 문서를 내려받습니다.
 
-| 의안 | 학습 풀 | NABO 정답 | ORCA 출력 | 결과 |
-|---|---|---|---|---|
-| 간호법안 (2126640) | 적재 | 추계서 2,000만원 | 2,000만원 | ✅ **100%** (9개 조항 분류도 일치) |
-| 각급법원 개정 (2213969) | 적재 | 추계서 **120.94억** | **120.94억** | ✅ **100%** |
-| AI데이터센터법 (2217718) | 적재 | 추계서 3.156억 | 3.16억 | ✅ 99% |
-| 친환경농어업법 (2214559) | **신규** | 추계서 1.2억 | 1.45억 | ✅ +21% (위원 수 가정 차이) |
-| 중대범죄수사청법 (2217239) | **신규** | **미첨부 3호** | 미첨부 3호 | ✅ |
-| 공소청 설치법 (2217240) | **신규** | **미첨부 3호** | 미첨부 3호 | ✅ |
-| 국가교육위법 개정 (2125482) | **신규** | **미첨부 3호** | 미첨부 3호 | ✅ |
-| 노동위원회법 개정 (2215589) | **신규** | **미첨부 3호** | 미첨부 3호 | ✅ (동일법 선례 자동 인용) |
+<table>
+  <tr>
+    <td width="50%"><img src="./docs/assets/product-home.png" alt="PDF 업로드 화면" /></td>
+    <td width="50%"><img src="./docs/assets/generated-estimate.png" alt="생성된 비용추계서" /></td>
+  </tr>
+  <tr>
+    <td align="center">PDF 업로드와 국회·지자체 양식 선택</td>
+    <td align="center">관련 조문과 5개년 산식이 포함된 결과 문서</td>
+  </tr>
+</table>
 
-→ **산출 케이스는 금액까지 정확히, 미첨부 케이스는 사유서까지 자동 생성.**
-→ 미첨부 판단은 규칙이 아니라 **유사 미첨부 사례 5,800여 건과의 kNN 매칭**으로 결정되므로, 사례가 쌓일수록 정확도가 자동으로 올라가는 구조입니다.
+## 핵심 엔지니어링
 
-> 🔬 이 결과에 도달하기까지의 **오답 진단 → 구조 개선 → 재검증 사이클 기록**은 [`docs/IMPROVEMENTS.md`](./docs/IMPROVEMENTS.md)에 정리되어 있습니다.
+### 1. 생성과 계산의 책임 분리
 
----
+LLM은 조문의 의미, 비용유발 후보, 필요한 변수를 구조화합니다. 확정된 변수의 곱셈·복리·연도별 합계는 [`calculator.py`](./backend/calculator.py)가 수행합니다.
 
-## 🏗️ 아키텍처
+이 분리는 **산술 과정의 재현성**을 높이지만 전체 결과의 정확성을 보장하지는 않습니다. 잘못 추출된 변수와 부적절한 가정은 근거 추적, QA 리포트, 사용자 검토로 다룹니다.
 
-ORCA의 핵심은 **LLM과 결정적 계산을 분리한 6-Stage 파이프라인**입니다.
+### 2. 비용추계와 미첨부 사례의 Dual-Channel 검색
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│   📄 [입력] 법안·조례안 PDF                                    │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 1. 조문 결정적 추출                                     │
-│   PyMuPDF → 텍스트 → 정규식 + 좌표 기반 신구조문대비표 파싱     │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 2. 조문별 비용유발 판단 (병렬)                          │
-│   임베딩 → 유사 조문 검색 → Gemini 의무성·재량성 분류           │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 3. NABO 공식 분류 (verdict)                            │
-│   추계서 ⏐ 미첨부 1·2·3호 ⏐ 미대상                            │
-│   Python 금액 게이트가 LLM 판단을 자동 보정                    │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 4. 산식 + 가정값 도출 (3-Tier Anchored Inference)      │
-│   ① 조문 추출 → ② 유사사례 통계 → ③ 정부 표준 교차 검증         │
-│   모든 단계에 evidence_trace 자체 기록                         │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 5. 결정적 계산 (calculator.py)                         │
-│   base × (1 + growth_rate)^year  ← LLM 환각 차단              │
-│   KOSIS API로 물가·임금상승률 실시간 반영                       │
-└──────────────────────────────────────────────────────────────┘
-                          ↓
-┌──────────────────────────────────────────────────────────────┐
-│  STAGE 6. QA 검증 + 추계서 자동 생성                           │
-│   누락 변수 / 가정값 사용 / RAG 신뢰도 → qaReport               │
-│   HTML · DOCX · HWPX 다중 포맷 출력                            │
-└──────────────────────────────────────────────────────────────┘
-```
+초기 버전은 비용이 발생하는 선례만 검색해, 조직 규모가 시행령에 위임된 법안도 임의 금액으로 산출했습니다. 이를 해결하기 위해 같은 조문 임베딩으로 두 종류의 문서를 함께 검색합니다.
 
-> 더 자세한 데이터 파이프라인·DB 스키마·응답 구조는 [`ARCHITECTURE.md`](./ARCHITECTURE.md) 참고.
-
----
-
-## ✨ 핵심 차별점
-
-### 1. LLM ≠ 계산기
-
-LLM은 **조문에서 변수 추출**만 합니다. 실제 곱셈·복리·연도별 누적은 Python 결정적 엔진(`backend/calculator.py`)이 처리합니다.
-→ **같은 입력 = 같은 출력**이 보장되고, LLM 환각이 숫자에 닿을 수 없습니다.
-
-### 2. 가정값 도출의 3-Tier Anchored Inference
-
-```
-조문 결정적 추출 (Tier 1)
-        ↓ (조문에 없으면)
-유사사례 통계 추론 (Tier 2) ──┐
-        ↓ (RAG 풀에서)        │ 교차 검증 ±50%
-정부 표준 앵커링 (Tier 3) ────┘
-        ↓
-채택값 + evidence_trace (samples, statistic, reference)
-```
-
-회의수당·인건비·물가 같은 정량 가정값을 **3단계 우선순위 + 외부 표준 교차 검증**으로 도출.
-→ "이 200,000원, 어디서 왔어요?"에 추계서가 스스로 답합니다.
-
-### 3. NABO 공식 분류 + Python 금액 게이트
-
-```
-verdict ∈ { 추계서 │ 미첨부 1호 │ 미첨부 2호 │ 미첨부 3호 │ 미대상 }
-```
-
-LLM이 "비용추계서"라 판단했더라도, **Python 금액 게이트**가 NABO 기준(연 10억/한시 30억)으로 verdict를 자동 보정. **법령에 명시된 분류 기준을 LLM 의견에 우선**합니다.
-
-### 3-1. Dual-Channel kNN Verdict — 미첨부 판단도 데이터 기반
-
-조문마다 임베딩 1개로 **두 채널을 동시 검색**해 유사도를 비교합니다.
-
-```
+```text
 조문 임베딩
-    ├─ 채널 A: 유사 비용추계서 검색 (31,000+ 청크)
-    └─ 채널 B: 유사 미첨부 사유서 검색 (5,800+ 청크)
-              ↓
-    B 우세 or 동일 법률의 미첨부 선례 존재 → 미첨부 신호
+├─ 비용추계서 채널: 산식과 전제값 후보
+└─ 미첨부 사유서 채널: 기술적 추계 곤란 선례
 ```
 
-여기에 **NABO 존재 게이트**를 결합: 실제 NABO 판단 원칙(정답지 분석으로 도출)에 따라, **산출 가능한 조문이 1개라도 있으면 다수 조문이 미첨부성이어도 "일부추계"로 작성**합니다. 다수결이 아닌 존재 판정 — 대구경북특별시 특별법(재정수반요인 39개 중 29개가 추계 곤란)처럼 복잡한 의안에서 NABO와 동일한 행동을 재현하는 핵심 원칙입니다.
+산출 가능한 조문이 하나라도 있으면 해당 부분만 추계하는 **존재 게이트**를 결합해, 단순 다수결이 일부추계를 막지 않도록 했습니다.
 
-### 4. KOSIS Open API 실시간 연동
+### 3. 근거 추적과 Human-in-the-loop
 
-소비자물가상승률·임금상승률·인구·등록장애인 수 등 **7개 표준 변수**를 통계청 KOSIS Open API로 자동 조회. 매년 갱신되는 정부 통계가 추계 산식에 자동 반영됩니다.
+각 전제값에는 KOSIS, 구조화 선례(TAG), 사용자 입력 등 출처를 기록합니다. 값이 없을 때 임의로 확정하지 않고 `missing_vars` 또는 검토 필요 상태로 노출하며, 사용자가 값을 수정하면 `/api/recompute`가 결과를 다시 계산합니다.
 
----
+현재 구현은 **검토와 재계산 단계의 HITL**입니다. 수정 이력을 학습 데이터로 자동 반영하는 폐쇄형 피드백 루프는 아직 구현하지 않았습니다.
 
-## 📊 학습 데이터 풀
+## 아키텍처
 
-| 데이터 | 규모 | 용도 |
+```mermaid
+flowchart LR
+    U[React + Vite<br/>PDF 업로드·검토] -->|POST /api/analyze_v2| API[Python HTTP API]
+    API --> P[PyMuPDF<br/>조문·개정분 추출]
+    P --> A[조문별 병렬 분석]
+    A --> R[(Supabase pgvector)]
+    R --> C[비용추계 / 미첨부<br/>Dual-Channel 검색]
+    C --> L[LLM 구조화 판단]
+    L --> G[정책 규칙·금액 게이트]
+    G --> K[Python 결정적 계산]
+    S[KOSIS·공식 기준값] --> K
+    K --> Q[QA·근거 추적]
+    Q --> O[대시보드·HTML·PDF]
+    O -->|전제값 수정| U
+```
+
+| 설계 결정 | 선택 이유 | 현재 트레이드오프 |
 |---|---|---|
-| 21·22대 국회 비용추계서 청크 | **43,964** | RAG 의미 검색 |
-| TAG 구조화 의안 | **1,378** | 산식 패턴 학습 |
-| 가정값 후보 | **1,356** | 단가·인원·횟수 통계 도출 |
-| 조문 비용유발 트리거 | **2,323** | 유사 조문 매칭 |
-| 법령·NABO 가이드 PDF 청크 | **840** | 방법론·분류 기준 |
+| LLM과 계산 엔진 분리 | 산술 오류와 재계산 불일치 축소 | 변수 추출·가정 선택 오류는 별도 검증 필요 |
+| 조문 단위 병렬 처리 | 외부 API 대기시간 단축 | rate limit과 부분 실패 정책 필요 |
+| pgvector HNSW | 4만여 문서 청크의 의미 검색 | 임계값과 청킹 정책이 결과에 큰 영향 |
+| Base64 JSON 업로드 | MVP 구현과 Vercel 연결 단순화 | 파일 크기 증가, 동기 요청 시간 제한 |
+| 표준 라이브러리 HTTP 서버 | 작은 API 표면과 의존성 최소화 | 인증·스키마 검증·관측성은 제품화 전에 보강 필요 |
 
-모든 데이터는 **Supabase pgvector(HNSW 인덱스)**에 적재되어 의미 유사도 검색이 가능합니다.
+상세 데이터 흐름, DB 스키마, 응답 구조는 [ARCHITECTURE.md](./ARCHITECTURE.md)에 정리했습니다.
 
----
+## 검증 현황
 
-## 🚀 빠른 시작
+현재 공개한 수치는 **성능 벤치마크가 아니라 개발 과정의 회귀 테스트 스냅샷**입니다.
 
-### 사전 준비
+| 검증 항목 | 현재 결과 | 해석 |
+|---|---:|---|
+| 공식 문서 방향 비교 | 8건 중 8건 일치 | 비용추계서/미첨부 방향의 소규모 회귀 확인 |
+| 금액 산출 사례 | 4건 | 3건은 공식 금액 대비 1% 이내, 1건은 전제 차이로 21% 오차 |
+| 계산·정책 단위 테스트 | 23개 통과 | 계산, 양식, 일부 정책 회귀를 로컬에서 검증 |
+| 프론트엔드 | ESLint + Vite build | 정적 검사와 프로덕션 번들 생성 |
+
+> 평가 대상과 동일한 공식 문서가 검색 풀에 포함될 수 있어 현재 결과를 엄격한 holdout 성능으로 해석하면 안 됩니다. 다음 평가는 `bill_id`와 시간 기준으로 검색 인덱스를 분리하고, 분류 F1·금액 MAPE·근거 Top-k hit rate를 독립적으로 측정할 계획입니다.
+
+오답을 구조 결함과 데이터 부족으로 나누어 개선한 과정은 [Engineering Log](./docs/IMPROVEMENTS.md), 면접용 설계 맥락과 트레이드오프는 [Engineering Case Study](./docs/ENGINEERING_CASE_STUDY.md)에서 볼 수 있습니다.
+
+## 프로젝트 맥락과 기여 범위
+
+이 프로젝트는 동국대학교 컴퓨터공학과 캡스톤·산학협력 과제로 시작했습니다. 현재 개인 포트폴리오 저장소에서는 안승원이 다음 영역을 중심으로 유지·고도화하고 있습니다.
+
+- PDF 입력부터 RAG/TAG, 정책 판정, 계산, 문서 출력까지 end-to-end 파이프라인 통합
+- Python 계산 엔진과 양식별 금액 게이트, 유사 선례 기반 전제값 처리
+- React 결과 대시보드, 근거 모달, 전제값 수정·재계산, PDF 출력 UX
+- 실제 NABO 문서와의 오답 비교, 회귀 사례 기록, 검색·판정 구조 개선
+- 생성형 AI를 구현 보조 도구로 활용하고, 중간 JSON·검색 결과·테스트로 생성 코드를 검증
+
+커밋 이력은 팀 저장소 병합 이후의 개인 고도화 과정도 함께 보존합니다. 구현 범위와 남은 기술 부채는 과장 없이 문서에 구분했습니다.
+
+## 기술 스택
+
+| 영역 | 기술 |
+|---|---|
+| Frontend | React 19, Vite 8, JavaScript, CSS |
+| Backend | Python, `ThreadingHTTPServer`, PyMuPDF |
+| AI | Gemini, OpenAI/Azure OpenAI Embeddings |
+| Retrieval | Supabase PostgreSQL, pgvector, HNSW |
+| Data | 국회 Open API, KOSIS Open API |
+| Output | HTML, PDF, DOCX, HWPX renderer |
+| Deployment | Vercel serverless configuration |
+
+## 로컬 실행
+
+### 요구 사항
+
+- Python 3.12 이상
+- Node.js 20.19 이상 또는 22.13 이상
+- npm
+
+### 설치
 
 ```bash
-# Python 3.14, Node 18+, npm
-git clone https://github.com/CSID-DGU/2026-1-CECD1-5-SSA-01.git
-cd 2026-1-CECD1-5-SSA-01
+git clone https://github.com/toranan/Cost-Estimate.git
+cd Cost-Estimate
 
-# Python 의존성
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# Frontend 의존성
-cd frontend && npm install && cd ..
-```
-
-### 환경 변수 설정
-
-`backend/.env.example`을 `backend/.env`로 복사한 뒤 키를 채웁니다.
-
-```bash
 cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local
+
+cd frontend
+npm ci
+cd ..
 ```
 
-| 키 | 용도 | 필수 여부 |
-|---|---|---|
-| `GEMINI_API_KEY` | 조문 분석·분류 | 필수 |
-| `OPENAI_API_KEY` | 임베딩 (text-embedding-3-small) | 필수 |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | RAG/TAG 검색 | 필수 |
-| `OPEN_ASSEMBLY_API_KEY` | 의안 메타 조회 | 선택 |
-| `AZURE_OPENAI_*` | OpenAI 임베딩 폴백 | 선택 |
-| `BACKEND_PORT` | 백엔드 포트 (기본 8010) | 선택 |
+`backend/.env`에 필요한 API 키를 설정합니다. 전체 RAG 분석을 재현하려면 데이터가 적재된 Supabase 프로젝트가 필요하며, 원본 데이터와 비밀 키는 저장소에 포함하지 않습니다.
 
-### 실행
+### 개발 서버
+
+터미널 1:
 
 ```bash
-# 1) 백엔드 (별도 터미널)
 python3 -m backend.server
-# → http://localhost:8010
-
-# 2) 프론트엔드 (별도 터미널)
-cd frontend && npm run dev
-# → http://localhost:5173
+# http://127.0.0.1:8000
 ```
 
-브라우저에서 `http://localhost:5173` 접속 → PDF 업로드 → 분석 결과 + 추계서 다운로드.
-
-### 테스트
+터미널 2:
 
 ```bash
-pip install pytest
-python -m pytest backend/test_formula_engine.py -v
-# → 18 passed (로컬 검증)
+cd frontend
+npm run dev
+# http://127.0.0.1:5173
 ```
 
----
+### 검증
 
-## 🛠️ 기술 스택
+```bash
+python3 -m unittest backend.test_formula_engine
 
-| 영역 | 사용 기술 |
-|---|---|
-| **LLM** | Google Gemini 2.5 Pro (조문 분석·분류·산식 추출) |
-| **임베딩** | OpenAI `text-embedding-3-small` (1536d), Azure OpenAI 폴백 |
-| **벡터 DB** | Supabase + pgvector (HNSW 인덱스) |
-| **계산 엔진** | Python 결정적 계산 (`calculator.py`) |
-| **외부 통계** | 통계청 KOSIS Open API, 국회 Open Assembly API |
-| **PDF 처리** | PyMuPDF (`fitz`) + macOS PDFKit Swift 폴백 |
-| **백엔드** | Python 3.14 `http.server` (ThreadingHTTPServer) |
-| **프론트엔드** | React 19 + Vite 8 |
-| **문서 생성** | HWPX 직접 조립 + DOCX |
-| **배포** | Vercel (serverless) |
-
----
-
-## 📁 디렉토리 구조
-
+cd frontend
+npm run lint
+npm run build
 ```
+
+## 저장소 구조
+
+```text
 .
+├─ api/                         # Vercel Python 진입점
 ├─ backend/
-│  ├─ analyzer_v2.py            # 메인 분석 엔진 (Stage 1~6)
-│  ├─ calculator.py             # Python 결정적 계산
-│  ├─ kosis_lookup.py           # KOSIS 통계 자동 조회
-│  ├─ form_renderer.py          # 추계서 HTML 렌더링
-│  ├─ assembly_case_policy.py   # NABO 정책 분류기
-│  ├─ assembly_formula_engine.py # TAG 산식 엔진
-│  ├─ assembly_assumptions.py   # 가정값 후보 검색
-│  ├─ server.py                 # /api/health, analyze, analyze_v2, render, export/pdf, recompute
-│  ├─ supabase_schema.sql       # DB 스키마
-│  └─ scripts/                  # 데이터 수집·임베딩·TAG 추출 파이프라인
-├─ frontend/
-│  └─ src/App.jsx               # React UI (Verdict / QA / Articles / Estimate / Form)
-├─ api/
-│  └─ index.py                  # Vercel serverless 진입점
-├─ ARCHITECTURE.md              # 전체 아키텍처 상세 문서
-└─ README.md
+│  ├─ analyzer_v2.py            # 메인 분석 파이프라인
+│  ├─ assembly_*                # 정책·산식·선례 엔진
+│  ├─ calculator.py             # 결정적 연도별 계산
+│  ├─ server.py                 # HTTP API 라우팅
+│  ├─ scripts/                  # 수집·청킹·임베딩·평가 도구
+│  └─ supabase_schema.sql       # RAG/TAG 스키마
+├─ frontend/                    # React + Vite UI
+├─ docs/
+│  ├─ assets/                   # 제품 이미지
+│  ├─ IMPROVEMENTS.md           # 오답 진단과 회귀 기록
+│  ├─ ENGINEERING_CASE_STUDY.md # 설계 결정·기여·기술 부채
+│  └─ planning/                 # 초기 기획과 진행 기록
+├─ ARCHITECTURE.md              # 상세 아키텍처
+└─ README.md                    # 제품·실행·검증 요약
 ```
 
----
+## 알려진 한계와 다음 단계
 
-## 🤝 보장하는 것 / 보장하지 못하는 것
+- 스캔 PDF OCR 미지원
+- 소규모 회귀 세트만 존재하며 엄격한 holdout 평가가 필요
+- 날짜 치환·준용 조문처럼 본문 의미가 얇은 의안은 제안이유·조문 제목 기반 보강 검색이 필요
+- 조세지출의 최신 실적처럼 부처 제출자료가 필요한 값은 선례 근사치와 사용자 입력을 명확히 구분해야 함
+- 동기 Base64 업로드를 객체 스토리지 + 비동기 작업 큐 + 진행 상태 API로 전환 필요
+- 인증, 고객별 데이터 격리, rate limit, 감사 로그는 프로덕션 적용 전 필수
+- 프론트엔드의 큰 단일 컴포넌트를 기능별 컴포넌트와 typed API layer로 분리 필요
 
-### ✅ 보장
+## 문서
 
-- **결정적 계산** — 같은 입력 = 같은 출력
-- **NABO 공식 분류** — 5분류 + 10억/30억 금액 게이트
-- **출처 추적** — 모든 가정값에 KOSIS·TAG·사용자입력 표시
-- **누락 정직 표시** — 가정 없으면 `missing_vars` 명시
-- **법령 근거** — NABO Guide + LEGAL_REF 자동 인용
+- [상세 아키텍처](./ARCHITECTURE.md)
+- [엔지니어링 케이스 스터디](./docs/ENGINEERING_CASE_STUDY.md)
+- [오답 진단과 개선 기록](./docs/IMPROVEMENTS.md)
+- [Supabase 스키마](./backend/supabase_schema.sql)
+- [Frontend 가이드](./frontend/README.md)
 
-### ⚠️ 한계
+## 라이선스
 
-- KOSIS 외 통계(시도청, 사업 데이터)는 사용자 입력 필요
-- 새로운 유형 의안은 RAG 신뢰도 낮음 (qaReport에 명시)
-- 스캔 PDF는 OCR 미지원
-- 법률 해석의 모호한 부분("필요한 경우" 등)은 LLM 해석
-
----
-
-## 📄 라이선스
-
-본 프로젝트는 **MIT 라이선스** 하에 배포됩니다. 자세한 내용은 [`LICENSE`](./LICENSE) 파일을 참고하세요.
-동국대학교 컴퓨터공학과 캡스톤(2026-1-CECD1-5-SSA-01)의 일환으로 시작되었습니다.
-
----
-
-<div align="center">
-
-**🏛️ ORCA — Operational RAG-and-TAG for Cost Analysis**
-
-> 국회예산정책처 표준 추계서를 자동으로, 검증 가능하게.
-
-</div>
+[MIT License](./LICENSE)

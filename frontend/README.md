@@ -1,16 +1,48 @@
-# React + Vite
+# ORCA Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React와 Vite로 구현한 법안 비용추계 검토 UI입니다.
 
-Currently, two official plugins are available:
+## 역할
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- PDF와 국회·지자체 양식 선택
+- 분석 API 호출과 로딩·오류 상태 관리
+- 조문별 재정수반 판단, 근거 문서, 추계 항목 표시
+- 사용자 전제값 수정 후 재계산 요청
+- HTML 미리보기와 PDF 다운로드
 
-## React Compiler
+## 데이터 흐름
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```text
+PDF 선택
+→ FileReader로 Data URL 변환
+→ POST /api/analyze_v2
+→ JSON 결과를 React state에 저장
+→ 결과·근거·문서 탭 렌더링
+→ 전제값 수정 시 POST /api/recompute
+```
 
-## Expanding the ESLint configuration
+## 로컬 실행
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+cp .env.example .env.local
+npm ci
+npm run dev
+```
+
+`VITE_API_BASE_URL`은 로컬 Python 백엔드 주소입니다.
+
+## 검증 명령
+
+```bash
+npm run lint
+npm run build
+```
+
+## 현재 기술 부채
+
+- `App.jsx`가 여러 화면과 API 상태를 함께 관리하는 큰 컴포넌트임
+- JavaScript API 응답에 런타임 스키마 검증이 없음
+- 분석 요청 취소, timeout, 재시도 정책이 없음
+- 진행 표시는 실제 서버 이벤트가 아니라 클라이언트 단계 표시임
+
+제품화 시 업로드, 결과, 전제값 편집, 문서 미리보기를 컴포넌트와 custom hook으로 분리하고 TypeScript와 런타임 검증을 도입할 계획입니다.
