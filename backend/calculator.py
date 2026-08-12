@@ -71,7 +71,9 @@ def _amount_candidates_from_patterns(item: dict[str, Any], tag_patterns: list[di
                 if annual_rows:
                     amount = int(round(median(annual_rows)))
 
-            if amount is None or amount <= 0:
+            # Revenue-loss evidence is stored as a negative amount. Zero is
+            # unusable, but a negative value is a valid annual fiscal effect.
+            if amount is None or amount == 0:
                 continue
 
             score = 0.0
@@ -139,15 +141,17 @@ def compute_year_estimates(
         "mode": "base_growth" | "yearly_series",
         "base_amount_thousand": 120000,
         "yearly_amounts_thousand": [120000, 122000, 124000, 126000, 128000],
-        "recurrence": "annual" | "one_time",
+        "recurrence": "annual" | "one_time" | "periodic",
+        "interval_years": 5,
         "start_year": 1,
         "end_year": 5,
         "growth_variable": "소비자물가상승률" | null
       }
 
-    If allow_estimated is true, missing base amounts can fall back to the
-    median annual amount from similar TAG structures. Those rows are marked
-    requires_review so the UI can clearly show that confirmation is needed.
+    If allow_estimated is true, only items explicitly marked
+    ``allow_tag_estimate`` may use the median annual amount from compatible
+    TAG structures. Scale-dependent items must remain unresolved until their
+    bill-specific variables are supplied.
     """
     items = estimate.get("items") or []
     if not items:
@@ -186,9 +190,10 @@ def compute_year_estimates(
         recurrence = str(calc.get("recurrence") or "unknown")
         start_year = int(_to_float(calc.get("start_year")) or 1)
         end_year = int(_to_float(calc.get("end_year")) or years)
+        interval_years = int(_to_float(calc.get("interval_years")) or 1)
         growth_variable = calc.get("growth_variable")
 
-        if base_amount is None and allow_estimated:
+        if base_amount is None and allow_estimated and item.get("allow_tag_estimate"):
             base_amount = _apply_tag_fallback(item, tag_patterns or [], years)
             if base_amount is not None:
                 calc = item.get("calculation") or {}
@@ -209,11 +214,11 @@ def compute_year_estimates(
             })
             item["year_amounts_thousand"] = [None] * years
             continue
-        if recurrence not in {"annual", "one_time"}:
+        if recurrence not in {"annual", "one_time", "periodic"}:
             issues.append({
                 "item": item_name,
                 "level": "error",
-                "reason": "recurrence는 annual 또는 one_time이어야 함",
+                "reason": "recurrence는 annual, one_time 또는 periodic이어야 함",
             })
             item["year_amounts_thousand"] = [None] * years
             continue
@@ -222,6 +227,14 @@ def compute_year_estimates(
                 "item": item_name,
                 "level": "error",
                 "reason": "start_year/end_year 범위 오류",
+            })
+            item["year_amounts_thousand"] = [None] * years
+            continue
+        if recurrence == "periodic" and interval_years < 1:
+            issues.append({
+                "item": item_name,
+                "level": "error",
+                "reason": "periodic 주기의 interval_years는 1 이상이어야 함",
             })
             item["year_amounts_thousand"] = [None] * years
             continue
@@ -248,6 +261,9 @@ def compute_year_estimates(
             if recurrence == "one_time":
                 if year_no == start_year:
                     amount = base_amount
+            elif recurrence == "periodic":
+                if start_year <= year_no <= min(end_year, years) and (year_no - start_year) % interval_years == 0:
+                    amount = base_amount * ((1 + growth_rate) ** max(0, year_no - start_year))
             elif start_year <= year_no <= min(end_year, years):
                 amount = base_amount * ((1 + growth_rate) ** max(0, year_no - start_year))
 

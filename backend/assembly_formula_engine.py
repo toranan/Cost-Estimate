@@ -56,6 +56,33 @@ def _ref(article: dict[str, Any]) -> str:
     return str(article.get("no") or "").replace("\n", " ").strip()
 
 
+def _article_refs(value: Any) -> set[str]:
+    refs: set[str] = set()
+    for match in re.finditer(r"제\s*(\d+)\s*조(?:의\s*(\d+))?", str(value or "")):
+        base, sub = match.groups()
+        refs.add(f"제{base}조" + (f"의{sub}" if sub else ""))
+    return refs
+
+
+def _canonical_family(item: dict[str, Any]) -> str:
+    family = str(item.get("formula_family") or infer_template_key(item) or "")
+    return {
+        "subsidy_payment": "transfer_payment",
+    }.get(family, family)
+
+
+def _committee_entity(text: str) -> str | None:
+    compact = _compact(text)
+    matches = re.findall(r"([가-힣A-Za-z0-9·ㆍ]{2,40}(?:위원회|심의회|협의회))", compact)
+    specific = [
+        value
+        for value in matches
+        if value not in {"위원회", "심의회", "협의회"}
+        and not re.search(r"제\d+조(?:의\d+)?위원회$", value)
+    ]
+    return max(specific, key=len) if specific else None
+
+
 def _assumption(
     name: str,
     unit: str,
@@ -198,6 +225,7 @@ def build_generalized_estimate(
 
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    last_committee_entity: str | None = None
     for article in cost_articles:
         text = str(article.get("text") or "")
         compact = _compact(text)
@@ -207,14 +235,42 @@ def build_generalized_estimate(
         ref = _ref(article)
 
         candidate: dict[str, Any] | None = None
-        if rule_name == "survey_or_plan_service" or re.search(r"(실태조사|연구용역)", compact):
-            frequency = "1" if re.search(r"연1회|매년", compact) else None
+        if trigger_type == "세수감소":
+            candidate = _item(
+                name=f"{title} 세수감소",
+                category="세입감소",
+                family="revenue_loss",
+                formula="최근 3~5년 연평균 감면실적 × 적용기한 연장기간",
+                trigger_ref=ref,
+                variables=["연평균 감면실적", "적용기한 연장기간"],
+                recurrence="annual",
+                assumptions=[
+                    _assumption(
+                        "연평균 감면실적",
+                        "천원/년",
+                        "동일 조문의 공식 추계서 또는 최근 조세 감면실적 필요",
+                        "external_data",
+                    ),
+                    _assumption(
+                        "적용기한 연장기간",
+                        "년",
+                        "개정문의 종료일 변경에서 확인",
+                        "document",
+                    ),
+                ],
+                allow_tag_estimate=True,
+            )
+        elif rule_name == "survey_or_plan_service" or re.search(r"(실태조사|연구용역)", compact):
+            period_match = re.search(r"(\d+)년마다", compact)
+            period_years = int(period_match.group(1)) if period_match else 1
+            frequency = 1 if period_match or re.search(r"연1회|매년", compact) else None
+            recurrence = "periodic" if period_match and period_years > 1 else "annual"
             assumptions = [
                 _assumption("용역 단가", "천원/회", "동일·유사 조사 연구용역 계약금액 필요", "external_data"),
                 {
                     "name": "수행 횟수",
-                    "value": int(frequency) if frequency else None,
-                    "unit": "회/년",
+                    "value": frequency,
+                    "unit": f"회/{period_years}년" if period_match else "회/년",
                     "basis": "조문에 명시된 수행주기" if frequency else "조문 또는 시행계획의 수행주기 확인 필요",
                     "source_type": "document" if frequency else "policy_input",
                     "needs_user_confirm": not bool(frequency),
@@ -227,10 +283,13 @@ def build_generalized_estimate(
                 formula="용역 단가 × 연간 수행 횟수",
                 trigger_ref=ref,
                 variables=["용역 단가", "수행 횟수"],
-                recurrence="annual",
+                recurrence=recurrence,
                 assumptions=assumptions,
                 allow_tag_estimate=True,
             )
+            if recurrence == "periodic":
+                candidate["formula"] = f"용역 단가 × {period_years}년마다 1회 수행"
+                candidate["calculation"]["interval_years"] = period_years
         elif rule_name in {"payment_or_subsidy", "new_support_project"} or trigger_type in {"직접지원", "대상확대"}:
             candidate = _item(
                 name=f"{title} 지원 소요",
@@ -263,7 +322,21 @@ def build_generalized_estimate(
                     _assumption("연간 유지관리비", "천원/년", "유지관리 요율 또는 유사사업 운영비 필요", "external_data"),
                 ],
             )
-        elif rule_name == "committee_or_body_operation" or trigger_type == "조직설치":
+        elif rule_name == "committee_or_body_operation" or (
+            trigger_type == "조직설치"
+            and re.search(r"위원회|심의회|협의회", compact)
+        ):
+            # A committee is commonly defined in one article and composed in
+            # the next (for example, "X위원회" followed by "위원회의 구성").
+            # Generic follow-up titles inherit the last named entity so the
+            # same committee is not charged twice.
+            generic_committee_title = bool(re.search(
+                r"^위원회(?:의)?(?:구성|조직|운영|회의|위원장|간사|소위원회|분과)",
+                _compact(title),
+            ))
+            entity = None if generic_committee_title else (_committee_entity(title) or _committee_entity(text))
+            if entity:
+                last_committee_entity = entity
             candidate = _item(
                 name=f"{title} 운영비",
                 category="운영비",
@@ -283,7 +356,11 @@ def build_generalized_estimate(
         if not candidate:
             continue
         candidate["calculation"]["end_year"] = years
-        key = (candidate["formula_family"], candidate["trigger_ref"])
+        if candidate["formula_family"] == "committee_operation":
+            entity_key = entity or last_committee_entity or candidate["trigger_ref"]
+            key = (candidate["formula_family"], entity_key)
+        else:
+            key = (candidate["formula_family"], candidate["trigger_ref"])
         if key in seen:
             continue
         seen.add(key)
@@ -314,27 +391,31 @@ def merge_generalized_estimate(
         return generated
 
     merged = dict(current)
-    merged_items = list(current.get("items") or [])
-    existing_by_key = {
-        (
-            str(item.get("formula_family") or infer_template_key(item) or ""),
-            _compact(item.get("trigger_ref")),
-        ): item
-        for item in merged_items
-    }
-    for item in generated.get("items") or []:
-        key = (str(item.get("formula_family") or ""), _compact(item.get("trigger_ref")))
-        existing = existing_by_key.get(key)
-        if existing:
-            existing.setdefault("formula_family", item.get("formula_family"))
-            existing.setdefault("allow_tag_estimate", item.get("allow_tag_estimate", False))
-            if not existing.get("assumptions"):
-                existing["assumptions"] = item.get("assumptions") or []
-            if not existing.get("variables_needed"):
-                existing["variables_needed"] = item.get("variables_needed") or []
+    # Deterministic rows are the canonical item registry. LLM rows for the
+    # same article and cost family are retained only as audit evidence, not as
+    # additional amounts. This prevents broad refs such as "제18조, 제19조"
+    # from being summed alongside article-specific committee rows.
+    merged_items = [dict(item) for item in generated.get("items") or []]
+    for draft in current.get("items") or []:
+        draft_family = _canonical_family(draft)
+        draft_refs = _article_refs(draft.get("trigger_ref"))
+        matches = [
+            item
+            for item in merged_items
+            if _canonical_family(item) == draft_family
+            and draft_refs
+            and bool(draft_refs & _article_refs(item.get("trigger_ref")))
+        ]
+        if not matches:
+            merged_items.append(draft)
             continue
-        merged_items.append(item)
-        existing_by_key[key] = item
+        audit = {
+            "name": draft.get("name"),
+            "trigger_ref": draft.get("trigger_ref"),
+            "formula": draft.get("formula"),
+        }
+        for existing in matches:
+            existing.setdefault("merged_llm_drafts", []).append(audit)
     merged["items"] = merged_items
     merged["source"] = "llm_plus_general_formula_engine"
     return merged
@@ -353,7 +434,7 @@ def _research_subtype(text: Any) -> str | None:
     compact = _compact(text)
     for subtype, terms in (
         ("survey", ("실태조사", "현황조사")),
-        ("master_plan", ("기본계획", "종합계획")),
+        ("master_plan", ("기본계획", "종합계획", "계획수립")),
         ("research", ("연구용역", "정책연구")),
     ):
         if any(term in compact for term in terms):
@@ -385,7 +466,7 @@ def _tag_formula_candidates(
                 for row in tagged.get("amounts") or []
                 if not row.get("is_total")
                 and row.get("amount_thousand") is not None
-                and float(row["amount_thousand"]) > 0
+                and float(row["amount_thousand"]) != 0
             ]
             if not annual:
                 continue
@@ -649,6 +730,12 @@ def apply_tag_formula_evidence(
     for item in estimate.get("items") or []:
         if not item.get("allow_tag_estimate"):
             continue
+        # A structured committee formula must be completed from its operands.
+        # Replacing one missing operand with another committee's opaque annual
+        # total would discard the bill-specific member count and hide the
+        # actual data gap from Human-in-the-loop.
+        if item.get("committee_formula"):
+            continue
         best = _best_tag_formula_candidate(item, tag_patterns)
         if not best:
             continue
@@ -663,48 +750,15 @@ def apply_tag_formula_evidence(
     return applied
 
 
-DEFAULT_ASSUMPTION_AMOUNTS: dict[str, dict[str, Any]] = {
-    "committee_operation": {
-        "amount": 4_000,
-        "recurrence": "annual",
-        "basis": "회의 2회, 수당지급대상 10명, 회의수당 20만원 기준 기본 가정",
-    },
-    "research_service": {
-        "amount": 100_000,
-        "recurrence": "annual",
-        "basis": "정책연구·실태조사 1회 수행 기준 기본 가정",
-    },
-    "facility_system": {
-        "amount": 500_000,
-        "recurrence": "annual",
-        "basis": "시스템·시설 구축 및 운영비 기본 가정",
-    },
-    "transfer_payment": {
-        "amount": 100_000,
-        "recurrence": "annual",
-        "basis": "지원 대상·단가 미확정 시 소규모 지원사업 기준 기본 가정",
-    },
-    "institution_establishment": {
-        "amount": 50_000_000,
-        "recurrence": "one_time",
-        "basis": "기관·청사 설치 총사업비 기본 가정",
-    },
-    "personnel_compensation": {
-        "amount": 500_000,
-        "recurrence": "annual",
-        "basis": "소요정원과 평균 인건비 미확정 시 연간 인건비 기본 가정",
-    },
-    "institution_operation": {
-        "amount": 300_000,
-        "recurrence": "annual",
-        "basis": "신설 기관 기본 운영비 기본 가정",
-    },
-}
-
-
 def apply_reasonable_default_amounts(estimate: dict[str, Any]) -> int:
-    """Fill remaining empty calculation bases so the product always emits a draft."""
-    applied = 0
+    """Leave unsupported amounts unresolved instead of inventing flat totals.
+
+    The legacy implementation assigned family-wide placeholder totals (for
+    example, 4 million won to every committee).  Even a transparent-looking
+    placeholder is not bill evidence.  Values may now enter the calculation
+    only through document facts, official statistics, compatible TAG cases,
+    or explicit user input.
+    """
     for item in estimate.get("items") or []:
         calc = item.setdefault("calculation", {})
         if not isinstance(calc, dict):
@@ -712,31 +766,9 @@ def apply_reasonable_default_amounts(estimate: dict[str, Any]) -> int:
             item["calculation"] = calc
         if calc.get("base_amount_thousand") is not None or calc.get("yearly_amounts_thousand"):
             continue
-        family = str(item.get("formula_family") or infer_template_key(item) or "")
-        default = DEFAULT_ASSUMPTION_AMOUNTS.get(family)
-        if not default:
-            default = {
-                "amount": 100_000,
-                "recurrence": "annual",
-                "basis": "비용유형을 특정하기 어려운 항목에 대한 연간 기준금액 기본 가정",
-            }
-            if not family:
-                item["formula_family"] = "general_default"
-        calc["base_amount_thousand"] = default["amount"]
-        calc["recurrence"] = default["recurrence"]
-        calc.setdefault("start_year", 1)
-        calc.setdefault("end_year", 5)
-        calc["source_note"] = default["basis"]
-        item["default_assumption_evidence"] = {
-            "type": "reasonable_default",
-            "label": "기본 가정값",
-            "basis": default["basis"],
-            "amount_thousand": default["amount"],
-        }
         item["requires_review"] = True
-        item["review_reason"] = "법안에 직접 수치가 없어 기본 가정값으로 초안을 산출했습니다."
-        applied += 1
-    return applied
+        item["review_reason"] = "공식 근거가 없는 평면 기본금액을 적용하지 않았습니다."
+    return 0
 
 
 def classify_estimation_status(

@@ -189,6 +189,7 @@ def build_analogical_committee_estimate(
     text: str,
     articles: list[dict[str, Any]],
     years: int = 5,
+    exclude_bill_nos: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Build a reviewable estimate from a structurally similar official case.
 
@@ -208,8 +209,14 @@ def build_analogical_committee_estimate(
             ],
         ]
     )
+    excluded = {str(value) for value in (exclude_bill_nos or set()) if value}
+    eligible_cases = [
+        case
+        for case in _load_cases()
+        if str((case.get("structure") or {}).get("bill_no") or "") not in excluded
+    ]
     ranked = sorted(
-        ((_rank_case(query, case), case) for case in _load_cases()),
+        ((_rank_case(query, case), case) for case in eligible_cases),
         key=lambda row: row[0],
         reverse=True,
     )

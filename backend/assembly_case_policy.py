@@ -265,6 +265,21 @@ def apply_validated_case_policy(
             continue
 
         if (
+            re.search(r"(?:출연금|보조금|교부액|지원금).{0,80}차등지원할수있", text)
+            and not re.search(r"(총액을증액|추가로지원|신규예산|지원금액을증액)", text)
+        ):
+            _mark_no_incremental_cost(
+                article,
+                policy="differential_allocation_only",
+                reason=(
+                    "평가 결과에 따라 기존 출연금·보조금을 차등 배분하는 규정으로, "
+                    "지원 총액의 증가 의무는 확인되지 않아 추가재정소요에서 제외했습니다."
+                ),
+                basis="기존 지원예산의 차등 배분이며 총액 증가 규정 부재",
+            )
+            continue
+
+        if (
             re.search(r"(지원|보조)", text)
             and re.search(r"할수있", text)
             and not re.search(r"(매월|연1회|매년|\d+명|\d+개소|\d+원|\d+만원|지원율)", text)
@@ -323,7 +338,7 @@ def apply_validated_case_policy(
                 text,
             ))
             has_concrete_size = bool(re.search(
-                r"\d+명이내|\d+명으로구성|위원장.{0,15}\d+명|정원.{0,25}\d+명"
+                r"\d+(?:명|인)이내|\d+(?:명|인)으로구성|위원장.{0,15}\d+(?:명|인)|정원.{0,25}\d+(?:명|인)"
                 r"|차관.{0,10}(예에준|보수)|과장급|사무처장",
                 text,
             ))
@@ -361,10 +376,49 @@ def apply_validated_case_policy(
         r"|보수교육"
         r"|실태및취업상황.{0,30}신고"
     )
+    # 재정수입 감소(조세 감면·면제 등) 및 일몰(적용기한) 연장 신호.
+    # 조세특례 개정은 조문이 날짜 치환만으로 구성되는 경우가 많아
+    # 지출 신호가 없어도 재정수반요인(세수 감소)이므로 억제하지 않는다.
+    tax_term_signal = re.compile(
+        r"조세|세금|세수|지방세|국세|취득세|재산세|소득세|법인세|부가가치세|인지세|"
+        r"등록면허세|세액|과세|조세특례|지방세특례"
+    )
+    revenue_or_sunset_signal = re.compile(
+        r"감면|면제|비과세|세액공제|소득공제|과세특례|중과세.{0,10}배제|세율.{0,15}인하"
+        r"|적용기한"
+        r"|\d{4}년\d{1,2}월\d{1,2}일까지.{0,80}\d{4}년\d{1,2}월\d{1,2}일까지"
+    )
+    tax_refs = {
+        _compact(article.get("no"))
+        for article in articles
+        if tax_term_signal.search(
+            _article_title(article.get("no")) + " " + _compact(article.get("text"))
+        )
+    }
     for article in articles:
-        if not article.get("cost_trigger") or article.get("rule_cost_trigger"):
+        if not article.get("cost_trigger"):
             continue
         text = _compact(article.get("text"))
+        article_ref = _compact(article.get("no"))
+        probe = _article_title(article.get("no")) + " " + text
+        # Keep a separator between title and body. Concatenating
+        # "직원등의임면" and "제15조..." created the accidental token
+        # "면제" and falsely classified an appointment article as a tax exemption.
+        if (
+            revenue_or_sunset_signal.search(probe)
+            and (tax_term_signal.search(probe) or article_ref in tax_refs)
+        ):
+            # A tax reduction is a revenue loss even when an earlier LLM/rule
+            # labeled the beneficiary-side effect as a direct subsidy.
+            article["trigger_type"] = "세수감소"
+            article["formula_family"] = "revenue_loss"
+            article["reason"] = (
+                "조세·부담금 감면 또는 적용기한 연장으로 재정수입 감소(또는 지출 지속)가 "
+                "예상되어 재정수반요인으로 유지합니다."
+            )
+            continue
+        if article.get("rule_cost_trigger"):
+            continue
         policy = str(article.get("case_policy") or "")
         has_public_fiscal_signal = bool(public_fiscal_signal.search(text))
         is_private_obligation = bool(private_obligation.search(text))

@@ -82,6 +82,15 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "growth_variable": None,
         "notes": "대상자 수는 KOSIS/API 또는 소관 부처 자료와 연결해야 합니다.",
     },
+    "revenue_loss": {
+        "label": "조세 감면 연장 세수감소 산식",
+        "standard_formula": "세수감소액 = 최근 3~5년 연평균 감면실적 × 적용기간",
+        "calculation_type": "annual_revenue_loss_times_period",
+        "variables": ["연평균 감면실적", "적용기한 연장기간"],
+        "recurrence": "annual",
+        "growth_variable": None,
+        "notes": "감면실적은 조세지출예산서·지방세통계연감 또는 동일 조문의 공식 추계서를 사용합니다.",
+    },
 }
 
 
@@ -90,13 +99,26 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("basic_expense", re.compile(r"기본경비|인건비대비|보수액대비")),
     ("asset_acquisition", re.compile(r"자산취득|비품|집기|PC")),
     ("personnel_compensation", re.compile(r"보수|인건비|직급|봉급|급여")),
-    ("research_service", re.compile(r"연구용역|실태조사|기본계획|조사")),
+    ("research_service", re.compile(r"연구용역|실태조사|기본계획|종합계획|계획수립|조사")),
     ("committee_operation", re.compile(r"위원회|심의회|협의회|회의수당|위원회운영|위원회사업비")),
     ("subsidy_payment", re.compile(r"지원금|보조금|수당|급여|감면|지급")),
 )
 
 
 def infer_template_key(item: dict[str, Any]) -> str | None:
+    name_context = _compact(" ".join(
+        str(part or "")
+        for part in (item.get("name"), item.get("category"), item.get("trigger_ref"))
+    ))
+    # A committee item can mention supporting personnel in its prose formula.
+    # Classify by the cost-bearing entity in the item name first; otherwise the
+    # generic personnel rule would turn committee operation into a 500M-won
+    # staffing default and duplicate the deterministic committee item.
+    if (
+        re.search(r"위원회|심의회|협의회", name_context)
+        and not re.search(r"사무처|사무국|지원인력|직원|인건비|보수", name_context)
+    ):
+        return "committee_operation"
     text = _compact(" ".join(
         str(part or "")
         for part in [
@@ -107,6 +129,15 @@ def infer_template_key(item: dict[str, Any]) -> str | None:
             " ".join(str(v) for v in item.get("variables_needed") or []),
         ]
     ))
+    if (
+        re.search(
+            r"조세|세금|세수|지방세|국세|취득세|재산세|소득세|법인세|"
+            r"부가가치세|인지세|등록면허세|세액|과세",
+            text,
+        )
+        and re.search(r"감면|면제|비과세|세액공제|소득공제|세수감소|적용기한", text)
+    ):
+        return "revenue_loss"
     for key, pattern in RULES:
         if pattern.search(text):
             return key
@@ -126,11 +157,24 @@ def _formula_evidence_matches(template_key: str, formula: str) -> bool:
     if template_key == "committee_operation":
         return "위원회" in compact or "회의" in compact or "운영" in compact
     if template_key == "research_service":
-        return "용역" in compact or "실태조사" in compact or "기본계획" in compact
+        return (
+            "용역" in compact
+            or "실태조사" in compact
+            or "기본계획" in compact
+            or "종합계획" in compact
+            or "계획수립" in compact
+        )
     if template_key == "personnel_compensation":
         return "보수" in compact or "인건비" in compact
     if template_key == "subsidy_payment":
         return "지원" in compact or "지급" in compact or "대상" in compact
+    if template_key == "revenue_loss":
+        return (
+            "감면" in compact
+            or "면제" in compact
+            or "세수감소" in compact
+            or "조세지출" in compact
+        )
     return False
 
 

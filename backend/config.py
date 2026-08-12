@@ -35,6 +35,21 @@ def get_env(name: str, default: str = "") -> str:
 
 GEMINI_API_KEY = get_env("GEMINI_API_KEY")
 GEMINI_MODEL = get_env("GEMINI_MODEL", "gemini-3-pro-preview")
+UPSTAGE_API_KEY = get_env("UPSTAGE_API_KEY")
+UPSTAGE_MODEL = get_env("UPSTAGE_MODEL", "solar-mini")
+UPSTAGE_BASE_URL = get_env(
+    "UPSTAGE_BASE_URL",
+    "https://api.upstage.ai/v1/chat/completions",
+)
+LLM_PROVIDER = get_env("LLM_PROVIDER", "gemini").strip().lower()
+LLM_PROFILE = get_env("LLM_PROFILE", "").strip()
+LLM_API_KEY = UPSTAGE_API_KEY if LLM_PROVIDER == "upstage" else GEMINI_API_KEY
+LLM_MODEL = UPSTAGE_MODEL if LLM_PROVIDER == "upstage" else GEMINI_MODEL
+LLM_MODEL_ID = (
+    f"{LLM_PROVIDER}:{LLM_MODEL}@{LLM_PROFILE}"
+    if LLM_PROFILE
+    else f"{LLM_PROVIDER}:{LLM_MODEL}"
+)
 HOST = get_env("BACKEND_HOST", "127.0.0.1")
 PORT = int(get_env("BACKEND_PORT", "8000"))
 
