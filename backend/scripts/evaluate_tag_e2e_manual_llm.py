@@ -549,6 +549,10 @@ def evaluate_case(bill_no: str, case: dict, *, use_precedent: bool) -> dict:
         stack.enter_context(patch("backend.tag_pipeline.extract_transfer_payment_vars", side_effect=_blocked_transfer))
         stack.enter_context(patch("backend.tag_pipeline.extract_capital_expenditure_vars", side_effect=_blocked_capital))
         stack.enter_context(patch("backend.tag_rule_engine.extract_activity_duration_months_llm", return_value=None))
+        # 증원 LLM 백업도 프로덕션 solar 대신 막는다(수동 하네스는 규칙 게이트만 검증).
+        stack.enter_context(patch("backend.tag_pipeline.extract_member_increment_llm", return_value=[]))
+        # 유추 추정 LLM 훅도 기본 차단(개념 제안은 신뢰 LLM/수동 대행만).
+        stack.enter_context(patch("backend.tag_pipeline.estimate_by_analogy_llm", return_value=[]))
         stack.enter_context(
             patch(
                 "backend.tag_pipeline.is_assembly_internal_committee",

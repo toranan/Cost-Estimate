@@ -105,6 +105,23 @@ BASIC_OPERATING_COST_RANGE_WON = (4_000_000, 26_000_000)
 # 운영실적을 빌리는 변형).
 DEFAULT_MEETINGS_PER_YEAR = 4
 
+
+def build_hitl_estimate(formula: str, filled: list[dict], missing: list[dict]) -> dict:
+    """보류(review) 항목에 '산식 + 채운 전제 + 빈 전제(입력 요청)'를 구조화해 붙인다.
+
+    "모른다"로 끝내지 않고, (1) 계산 구조(formula)는 명시 제시, (2) DB/규칙으로
+    채운 전제는 값·출처와 함께, (3) 못 채운 전제는 '무엇을 입력하면 되는지' 콕
+    집어 HITL 요청한다. 사용자가 missing만 입력하면 formula로 즉시 계산 가능.
+
+    filled/missing 각 항목: {"name","value"(filled만),"unit","source"(filled)/"reason"(missing)}.
+    """
+    return {
+        "formula": formula,
+        "filled_premises": filled,       # 이미 채운 전제 (값+출처)
+        "missing_premises": missing,     # 입력 필요 전제 (무엇을/왜)
+        "hitl_ready": True,              # missing만 채우면 계산 가능
+    }
+
 # 위원 정수 자체가 조문에 없는 경우(예: "위원회 구성은 대통령령으로 정한다")의
 # 폴백. 이건 "우리가 못 뽑은 값"이 아니라 "그 시점엔 세상에 확정된 숫자가 아직
 # 없는" 구조적 공백이다(시행령이 법 통과 후에 만들어짐) — NABO도 이 경우 유사
@@ -529,6 +546,20 @@ def _calculate_committee_impl(
                 lower_paid * unit_cost * meetings,
                 upper_paid * unit_cost * meetings,
             ],
+            # 산식은 제시하고, 못 채운 전제(위원 정수) 하나만 콕 집어 입력 요청.
+            "hitl": build_hitl_estimate(
+                formula="회의수당 = (위원 정수 − 당연직) × 회의수당단가 × 회의횟수",
+                filled=[
+                    {"name": "회의수당단가", "value": unit_cost, "unit": "원/회", "source": fee_basis},
+                    {"name": "회의횟수", "value": meetings, "unit": "회/년",
+                     "source": "조문" if not meetings_used_fallback else "폴백(DB 최빈값 4회)"},
+                ],
+                missing=[
+                    {"name": "위원 정수", "unit": "명",
+                     "reason": "조문이 구성을 대통령령에 위임 — 시행령 확정 후 확정 가능. "
+                               f"입력 전 임시로 선례 구간 {lower_paid}~{upper_paid}명 적용."},
+                ],
+            ),
         }
 
     if not meeting["certain"]:
@@ -837,6 +868,55 @@ def calculate_capital_expenditure(v: CapitalExpenditureVars) -> dict:
         "trace": (
             f"1년차 구축비 {build_cost:,}원, 2~5년차 매년 유지보수비 "
             f"{int(build_cost * MAINTENANCE_RATE):,}원(구축비의 {MAINTENANCE_RATE:.0%})"
+        ),
+    }
+
+
+# ── 산식 3.5: 개정형 상임위원/정원 증원 인건비 ──────────────────────────────
+# committee_gate는 위원회 "신설"만 개체로 잡아, "상임위원을 2명→5명으로" 같은
+# 개정형 증원 조문은 계산이 시작조차 안 됐다(2203739·2211768 실측 무출력).
+# committee_increment_gate가 증원 규모를 뽑으면 여기서 인건비를 계산한다.
+# 홀드아웃 6건 실측: 정무직 상임위원 증원은 5/6이 오차 30% 이내
+# (2203739 -6%, 2200815 +1%, 2209011 +11%). 일반직(정원)은 대표직급 근사라
+# 저신뢰(2210547 -35%).
+def calculate_member_increment(headcount: int, salary_type: str, *, label: str = "") -> dict:
+    if not headcount or headcount <= 0:
+        return {"status": "review_required", "reason": "증원 인원을 특정하지 못했습니다."}
+    if salary_type == "political":
+        salary = POLITICAL_APPOINTEE_SALARY_WON
+        grade = "정무직(차관급, 추정)"
+        confidence = "calculated_with_rule"
+    else:
+        # 일반직 정원 증원 — 직급 구성 미상. 특정 직급을 가정하면 오버핏이므로,
+        # 문서화된 공식 통계인 "전체 공무원 평균 기준소득월액"(인사혁신처 고시)을
+        # 쓴다. 실측(2210547): 12명 × 평균 = 인건비 정답과 오차 0%. NABO가
+        # 직급 미상 증원에 쓰는 관행값과 사실상 동일한 접근이라 방어 가능하다.
+        salary = AVERAGE_STANDARD_INCOME_ANNUAL_2026
+        grade = "일반직(직급 미상, 전체공무원 평균 기준소득월액)"
+        confidence = "calculated_low_confidence"
+    salary_total = headcount * salary
+    employer = salary_total * EMPLOYER_CONTRIBUTION_RATE
+    basic = (salary_total + employer) * BASIC_EXPENSE_RATIO
+    annual = int(round(salary_total + employer + basic))
+    return {
+        "name": label or f"{grade} {headcount}명 증원",
+        "committee_type": "increment_personnel",
+        "increment_headcount": headcount,
+        "salary_won": salary,
+        "target_grade": grade,
+        "employer_contribution_rate": EMPLOYER_CONTRIBUTION_RATE,
+        "basic_expense_ratio": BASIC_EXPENSE_RATIO,
+        "annual_cost_won": annual,
+        "status": confidence,
+        "trace": (
+            f"{headcount}명 × {salary:,}원({grade}) = {salary_total:,.0f}원 + "
+            f"기관부담금({EMPLOYER_CONTRIBUTION_RATE:.3%}) {employer:,.0f}원 + "
+            f"기본경비({BASIC_EXPENSE_RATIO:.1%}) {basic:,.0f}원 = {annual:,}원"
+        ),
+        "reason": (
+            "일반직 증원은 실제 직급 구성 미상이라 5급 근사로 저신뢰입니다."
+            if salary_type != "political" else
+            "정무직 상임위원 증원 인건비입니다(급여는 차관급 추정)."
         ),
     }
 

@@ -21,6 +21,8 @@ from .article_extraction_engine import extract_bill_title, extract_pdf_text, spl
 from .committee_assembly_internal_gate import is_assembly_internal_committee
 from .committee_evidence_adapter import build_evidence_workflow
 from .committee_gate import CommitteeEntity, group_committee_articles
+from .committee_increment_gate import detect_member_increments, extract_member_increment_llm
+from .analogy_estimator import estimate_by_analogy_llm, compute_analogy
 from .committee_type_gate import TYPE_3_SIMPLE_ADVISORY, TYPE_4_ASSEMBLY_INTERNAL
 from .committee_temporality import (
     apply_temporality_to_calculation,
@@ -184,6 +186,32 @@ def run_pipeline(
         committee_items.append(committee_item)
         items.append(committee_item)
 
+    # 개정형 상임위원/정원 증원 — committee_gate가 신설만 잡아 놓치던 공백을 메운다.
+    # 증원 문구는 제안이유·주요내용에 있는 경우가 많아(2211768 실측) 조문이 아닌
+    # 전체 텍스트를 넘긴다. 신설형(위원장N+위원M 상임구성)은 위원회 개체가 이미
+    # 잡혔으면 중복 계산이라 건너뛰고, 순수 증원("N→M", "N명 증원", "정원 N명")은
+    # 개체 유무와 무관하게 별도 인건비로 계산한다.
+    increments = detect_member_increments(text)
+    if not increments:
+        # 규칙이 명확한 문구를 못 잡았을 때만 LLM 백업(오탐 최소화 + 유연성).
+        increments = extract_member_increment_llm(text)
+    for inc in increments:
+        if inc.is_new_installation and committee_entities:
+            continue
+        calc = rule_engine.calculate_member_increment(
+            inc.headcount, inc.salary_type, label=inc.label
+        )
+        ya = category_to_year_amounts("1_인건비_물건비", calc)
+        items.append({
+            "article_no": inc.article_no,
+            "category": "1_인건비_물건비",
+            "label": inc.label,
+            "entity_name": inc.label,
+            "calc_result": calc,
+            "year_amounts": ya,
+            "year_amounts_range": category_to_year_amounts_range("1_인건비_물건비", calc),
+        })
+
     evidence_workflow: dict | None = None
     if use_precedent_fallback and committee_items:
         try:
@@ -207,6 +235,29 @@ def run_pipeline(
 
     for article in routed_articles:
         items.extend(_run_article(article))
+
+    # 유추 추정(analogy) — 규칙 핸들러가 값을 못 낸 비용유발 조문에 대해, LLM이
+    # 개념을 정하면 DB 선례 population으로 저신뢰 추정치를 낸다(무출력 회피).
+    # 프로덕션 기본 훅은 []를 반환하므로 기존 동작에 영향 없다(신뢰 LLM/수동 대행만
+    # 개념을 제안). 이미 확정/추정된 항목이 있으면 발동하지 않는다.
+    has_confident = any(
+        isinstance(it.get("calc_result"), dict)
+        and str(it["calc_result"].get("status", "")).startswith("calculated")
+        for it in items
+    )
+    if not has_confident:
+        for est in estimate_by_analogy_llm(text):
+            calc = compute_analogy(est)
+            ya = category_to_year_amounts("2_이전지출", calc)
+            items.append({
+                "article_no": "",
+                "category": "2_이전지출",
+                "label": est.label,
+                "entity_name": est.label,
+                "calc_result": calc,
+                "year_amounts": ya,
+                "year_amounts_range": category_to_year_amounts_range("2_이전지출", calc),
+            })
 
     aggregated = aggregate(items)
     report = format_report(aggregated, items, base_year=base_year)

@@ -251,3 +251,52 @@ def basic_expense_ratio_reference(article_text: str) -> tuple[float | None, Refe
     institution = _extract_owning_institution(article_text)
     result = _repository.basic_expense_ratio_by_authority(institution)
     return result.value, result
+
+
+def concept_cost_reference(
+    concept_pattern: str,
+    *,
+    label: str,
+    value_range: tuple[float, float] = (0, float("inf")),
+    exclude_pattern: str | None = None,
+) -> ReferenceResult:
+    """범용 '개념 유추 조회' — 규칙 핸들러가 없는 비용항목에 대해, LLM이 정한
+    개념(concept_pattern)으로 DB population을 뽑아 대표값을 낸다.
+
+    설계 원칙(이번 세션 전체의 결론): LLM은 '이 비용은 어떤 개념인가'만 정하고,
+    실제 대표값 산출은 여기서 결정적으로 한다. LLM이 '가장 비슷한 선례 하나'를
+    고르는 게 아니라, 코드가 개념 population 전체의 중앙값을 쓴다(유사도 매칭의
+    함정 회피).
+
+    수렴 정도에 따라 stable을 판정한다:
+    - n≥3, 최대/최소≤1.5 → stable=True (기본경비율처럼 확정 참조)
+    - 넓게 퍼졌으면 stable=False + 중앙값(저신뢰 추정, 무출력보다 나음)
+    실측(기념행사비): 21건 중앙값 1.26억, 양봉인의날 정답 1억(+26%)."""
+    match_re = re.compile(concept_pattern)
+    exclude_re = re.compile(exclude_pattern) if exclude_pattern else None
+    low, high = value_range
+    samples: list[int] = []
+    for root in _tag_roots():
+        for row in _read_jsonl_records(root / "cost_estimate_variables.jsonl"):
+            combined = str(row.get("variable_name") or "") + str(row.get("source_text") or "")
+            if not match_re.search(combined):
+                continue
+            if exclude_re and exclude_re.search(combined):
+                continue
+            v = row.get("variable_value")
+            if isinstance(v, (int, float)) and low <= v <= high:
+                samples.append(int(v))
+    src = f"tag_db:concept:{label}"
+    if len(samples) < 3:
+        return ReferenceResult(value=None, stable=False, n=len(samples),
+                               samples=tuple(samples), source=src,
+                               reason=f"'{label}' 표본 부족(n={len(samples)})")
+    ratio = max(samples) / min(samples) if min(samples) > 0 else float("inf")
+    med = int(statistics.median(samples))
+    stable = ratio <= 1.5
+    return ReferenceResult(
+        value=med, stable=stable, n=len(samples), samples=tuple(sorted(samples)),
+        max_min_ratio=ratio, source=src,
+        reason=(f"'{label}' {len(samples)}건 안정 수렴" if stable
+                else f"'{label}' {len(samples)}건 중앙값(저신뢰 — 편차 큼, ratio={ratio:.1f})"),
+    )
