@@ -6,43 +6,12 @@ from pathlib import Path
 
 from backend.erce.reviewed_variable_rows import reviewed_variable_rows, burial_comparable_rows
 from backend.erce.variable_evidence_store import DEFAULT_VARIABLE_DB, save_variable_rows
-from backend.erce.method_evidence_store import save_method_rows
-from backend.erce.reviewed_method_rows import reviewed_method_rows
-from backend.erce.support_method_operands import support_operand_rows
 from backend.erce.interagency_meeting_evidence import interagency_meeting_rows, unification_council_annual_rows
 from backend.erce.legislative_committee_evidence import legislative_committee_rows, policy_review_committee_rows
 from backend.erce.executive_compensation_evidence import executive_position_difference_rows
-from backend.erce.transfer_payment_evidence import transfer_payment_rows, veteran_allowance_rows
-from backend.erce.insurance_premium_evidence import insurance_premium_rows
-from backend.erce.health_insurance_care_evidence import (
-    health_insurance_care_rows, health_insurance_care_answer_rows,
-)
-from backend.erce.health_insurance_general_support_evidence import (
-    health_insurance_general_support_rows, health_insurance_general_support_answer_rows,
-)
-from backend.erce.spouse_leave_evidence import spouse_leave_rows
-from backend.erce.infertility_leave_evidence import infertility_leave_rows
-from backend.erce.child_asset_evidence import child_asset_rows
-from backend.erce.child_allowance_evidence import child_allowance_rows
-from backend.erce.parent_benefit_evidence import parent_benefit_rows
-from backend.erce.survivor_compensation_evidence import survivor_compensation_rows
-from backend.erce.veteran_support_evidence import veteran_support_rows
-from backend.erce.noise_support_evidence import noise_support_rows
-from backend.erce.aquaculture_compensation_evidence import aquaculture_compensation_rows
-from backend.erce.school_meal_evidence import school_meal_rows
-from backend.erce.teacher_staffing_evidence import teacher_staffing_rows
-from backend.erce.school_staffing_groups import school_staffing_group_rows
-from backend.erce.school_meal_research_evidence import school_meal_research_rows
-from backend.erce.loan_financing_evidence import loan_financing_rows, official_loan_projection_rows
-from backend.erce.multichild_scholarship_evidence import multichild_scholarship_rows
-from backend.erce.scholarship_cap_evidence import scholarship_cap_rows
-from backend.erce.care_worker_survey_evidence import care_worker_survey_rows
-from backend.erce.village_enterprise_evidence import village_enterprise_rows
-from backend.erce.veteran_allowance_baselines import veteran_allowance_baseline_rows
+from backend.erce.transfer_payment_evidence import transfer_payment_rows
 from backend.erce.committee_annual_operation_evidence import committee_annual_operation_rows
-from backend.erce.information_system_evidence import sports_information_system_rows
-from backend.erce.court_organization_evidence import court_organization_rows
-from backend.erce.government_organization_evidence import government_organization_rows
+from backend.erce.social_insurance_evidence import social_insurance_rows
 
 
 def main():
@@ -53,39 +22,8 @@ def main():
                               + interagency_meeting_rows() + unification_council_annual_rows()
                               + legislative_committee_rows() + policy_review_committee_rows()
                               + executive_position_difference_rows() + transfer_payment_rows()
-                              + veteran_allowance_rows()
-                              + insurance_premium_rows()
-                              + health_insurance_care_rows()
-                              + health_insurance_care_answer_rows()
-                              + health_insurance_general_support_rows()
-                              + health_insurance_general_support_answer_rows()
-                              + spouse_leave_rows()
-                              + infertility_leave_rows()
-                              + child_asset_rows()
-                              + child_allowance_rows()
-                              + parent_benefit_rows()
-                              + survivor_compensation_rows()
-                              + veteran_support_rows()
-                              + noise_support_rows()
-                              + aquaculture_compensation_rows()
-                              + school_meal_rows()
-                              + teacher_staffing_rows()
-                              + school_staffing_group_rows()
-                              + school_meal_research_rows()
-                              + loan_financing_rows()
-                              + official_loan_projection_rows()
-                              + multichild_scholarship_rows()
-                              + scholarship_cap_rows()
-                              + care_worker_survey_rows()
-                              + village_enterprise_rows()
-                              + veteran_allowance_baseline_rows()
-                              + committee_annual_operation_rows()
-                              + sports_information_system_rows()
-                              + court_organization_rows()
-                              + government_organization_rows()
-                              + support_operand_rows(), args.db)
-    method_count = save_method_rows(reviewed_method_rows(), args.db)
-    print(f"ERCE reviewed variable rows upserted: {count}; methods: {method_count}; local DB: {args.db}")
+                              + committee_annual_operation_rows() + social_insurance_rows(), args.db)
+    print(f"ERCE reviewed variable rows upserted: {count}; local DB: {args.db}")
 
 
 if __name__ == "__main__":
