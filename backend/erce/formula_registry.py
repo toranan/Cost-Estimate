@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from backend.general_cost_resolver import FORMULAS
+from backend.erce_web.general_cost_resolver import FORMULAS
 
 
 @dataclass(frozen=True)
